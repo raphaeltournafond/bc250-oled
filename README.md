@@ -64,6 +64,19 @@ The screen stays dark? See [Check from Linux](#check-from-linux). The usual susp
 display that needs a full power off and on after rewiring. Update later with
 `git -C ~/bc250-oled pull && bash ~/bc250-oled/setup.sh`.
 
+### Halloween theme
+
+![Halloween theme on a 0.96" display](docs/halloween-0.96.png)
+
+`--theme halloween`: a jack-o'-lantern greets you at start-up, its candle flickering while a bat flies past. Then
+pumpkins sit on the CPU and GPU, a bat on the fan and a skull on the SSD, the separators are stitched like a scar,
+and a tile too hot says `BOO!`. It costs the bus nothing more than the classic look: everything but the start-up is
+as still as the numbers.
+
+```bash
+bash ~/bc250-oled/setup.sh --theme halloween
+```
+
 ## Supported displays
 
 Any I2C OLED module with one of the common controllers. Pick the preset that matches yours:
@@ -273,6 +286,7 @@ bash setup.sh --preset 1.3 --rotate 180 --night 23:00-07:30
 | `--contrast 0-255` | controller's | lower is dimmer and wears the OLED less |
 | `--night HH:MM-HH:MM` | | display off during these hours |
 | `--alert °C` | 90 | a temperature at or above this shows inverted |
+| `--theme classic\|halloween` | classic | the look ([Halloween](#halloween-theme): pumpkins, a bat, `BOO!` when hot) |
 | `--bus N`, `--address 0x3C` | auto | skip the search |
 | `--no-shift` | | the picture moves by one pixel every 3 minutes against burn-in; this turns it off |
 | `--keepalive S` | 10 | seconds between checks that the display is still on, so it recovers after being replugged; 0 turns them off |

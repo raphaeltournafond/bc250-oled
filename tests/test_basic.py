@@ -189,13 +189,13 @@ class Fixture(unittest.TestCase):
 
 class Layouts(unittest.TestCase):
     def test_every_size_and_page(self):
-        for driver, width, height in SIZES:
+        for (driver, width, height), theme in ((size, theme) for size in SIZES for theme in screens.THEMES):
             for stats in (SAMPLE, Stats()):
-                s = screens.Screens(width, height, list(screens.PAGES))
+                s = screens.Screens(width, height, list(screens.PAGES), theme=theme)
                 for _ in range(3):
                     s.record(stats)
                 for i, (tiles, lines) in enumerate(s.screens(stats)):
-                    with self.subTest(size=f"{width}x{height}", screen=i, empty=stats == Stats()):
+                    with self.subTest(size=f"{width}x{height}", theme=theme, screen=i, empty=stats == Stats()):
                         for kind, (x, y, w, h) in tiles:
                             self.assertTrue(x >= 0 and y >= 0 and x + w <= width and y + h <= height,
                                             f"{kind} {(x, y, w, h)} is off the screen")
@@ -223,12 +223,28 @@ class Layouts(unittest.TestCase):
 
     def test_every_character_used_is_in_the_font(self):
         for kind in ("cpu", "gpu", "nvme", "fan", "power", "vrm", "ram"):
-            c = screens.content(kind, SAMPLE, 90)
-            for part in (c.label, c.value, c.right, c.sub):
-                self.assertTrue(set(part.upper()) <= set(screens.GLYPHS), f"{kind}: {part!r}")
+            for theme, stats in ((t, st) for t in screens.THEMES for st in (SAMPLE, Stats(cpu_temp=95, gpu_temp=95))):
+                c = screens.content(kind, stats, 90, theme)
+                for part in (c.label, c.value, c.right, c.sub):
+                    self.assertTrue(set(part.upper()) <= set(screens.GLYPHS), f"{kind} {theme}: {part!r}")
         self.assertTrue(set(screens.footer_line(SAMPLE, 500)) <= set(screens.GLYPHS))
         self.assertTrue(all(len(rows) == screens.CAP and len(set(map(len, rows))) == 1
                             for rows in screens.GLYPHS.values()))
+
+    def test_halloween(self):
+        """Pumpkins on CPU and GPU, BOO! on a hot tile, and a start-up animation that fits every size."""
+        c = screens.content("cpu", Stats(cpu_temp=95, cpu_load=50), 90, "halloween")
+        self.assertEqual((c.label, c.right, c.hot), ("🎃 CPU", "BOO!", True))
+        self.assertEqual(screens.content("cpu", SAMPLE, 90, "classic").label, "CPU")
+        for driver, width, height in SIZES:
+            frames = screens.Screens(width, height, theme="halloween").splash_frames()
+            self.assertGreater(len(frames), 5)
+            self.assertLess(sum(seconds for _, seconds in frames), 4)
+            for picture, _ in frames:
+                self.assertEqual(picture.size, (width, height))
+                self.assertIsNotNone(picture.getbbox())
+        with self.assertRaises(ValueError):
+            screens.Screens(128, 64, theme="spooky")
 
     def test_digits_share_one_width(self):
         self.assertEqual(len({screens.text_width(d) for d in "0123456789"}), 1)
@@ -372,13 +388,13 @@ class Panel(Fixture):
     def test_little_traffic_on_the_shared_bus(self):
         """The SMBus is shared with the board's firmware: a stats update must take few transfers, not a whole frame
         (changes in opposite corners used to be merged into one rectangle: ~925 transfers a second)."""
-        for kind in ("ssd1306", "sh1106"):
-            with self.subTest(controller=kind):
+        for kind, theme in (("ssd1306", "classic"), ("sh1106", "classic"), ("ssd1306", "halloween")):
+            with self.subTest(controller=kind, theme=theme):
                 controller = self.use_bus(kind, I2cFunc.SMBUS_WRITE_BYTE_DATA)
                 device = displays.open_device(kind, 128, 64, 1, 0x3C)
                 device.persist = True
                 panel = displays.Panel(device)
-                s = screens.Screens(128, 64)
+                s = screens.Screens(128, 64, theme=theme)
                 rng, stats = random.Random(1), SAMPLE
                 panel.show(s.render(stats))
                 controller.writes = 0

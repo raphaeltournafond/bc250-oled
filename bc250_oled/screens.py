@@ -11,6 +11,7 @@ CAP = 7  # every glyph is 7 pixels high
 MAX_SCALE = 4
 DIM = 90  # graph fills on greyscale displays
 PAGES = ("overview", "system", "graphs")
+THEMES = ("classic", "halloween")
 
 GLYPHS = {  # 7 rows each; digits share one width so numbers don't jiggle as they change
     "0": ".###. #...# #..## #.#.# ##..# #...# .###.", "1": "..#.. .##.. ..#.. ..#.. ..#.. ..#.. .###.",
@@ -36,6 +37,10 @@ GLYPHS = {  # 7 rows each; digits share one width so numbers don't jiggle as the
     ":": ".. ## ## .. ## ## ..", "-": "..... ..... ..... ##### ..... ..... .....",
     "/": "..... ....# ...#. ..#.. .#... #.... .....", "+": "..... ..#.. ..#.. ##### ..#.. ..#.. .....",
     "?": ".###. #...# ....# ...#. ..#.. ..... ..#..",
+    # halloween icons
+    "🎃": "...#... .##.##. ####### #.###.# ####### #.....# .#####.",
+    "🦇": "....... #.....# ##.#.## ####### .#####. ..#.#.. .......",
+    "☠": ".###. ##### #.#.# ##### .###. .#.#. .....", "!": "# # # # # . #",
 }
 GLYPHS = {c: rows.split() for c, rows in GLYPHS.items()}
 
@@ -94,7 +99,20 @@ class Content:
     hot: bool = False  # shown inverted
 
 
-def content(kind, s, alert):
+ICONS = {"cpu": "🎃", "gpu": "🎃", "fan": "🦇", "nvme": "☠", "vrm": "☠"}  # halloween
+
+
+def content(kind, s, alert, theme="classic"):
+    c = _content(kind, s, alert)
+    if theme == "halloween":
+        if kind in ICONS:
+            c.label = f"{ICONS[kind]} {c.label}"
+        if c.hot:
+            c.right = "BOO!"
+    return c
+
+
+def _content(kind, s, alert):
     if kind == "cpu":
         return Content("CPU", _f(s.cpu_temp, "{:.0f}°"), _f(s.cpu_load, "{:.0f}%", ""),
                        None if s.cpu_load is None else s.cpu_load / 100, _f(s.cpu_ghz, "{:.2f}GHZ", ""),
@@ -267,8 +285,11 @@ def layout(page, width, height, s):
 class Screens:
     """The sequence of screens to show, from the chosen pages, and the pictures for them."""
 
-    def __init__(self, width, height, pages=None, alert=90, grey=False):
+    def __init__(self, width, height, pages=None, alert=90, grey=False, theme="classic"):
         self.width, self.height, self.grey = width, height, grey
+        if theme not in THEMES:
+            raise ValueError(f"unknown theme {theme}: choose from {', '.join(THEMES)}")
+        self.theme = theme
         self.pages = list(pages or default_pages(width, height))
         unknown = set(self.pages) - set(PAGES)
         if unknown:
@@ -289,6 +310,9 @@ class Screens:
         image = Image.new("L", (self.width, self.height))
         draw = ImageDraw.Draw(image)
         for line in lines:
+            if line[1] == line[3] and self.theme == "halloween":
+                stitches(image, line[0], line[2], line[1])
+                continue
             for px in range(line[0], line[2] + 1, 2) if line[1] == line[3] else ():  # dotted, lighter on the eye
                 image.putpixel((px, line[1]), 255)
             if line[0] == line[2]:
@@ -302,8 +326,14 @@ class Screens:
                 graph(image, box, f"{which.upper()} LOAD", list(self.history[which]),
                       s.cpu_load if which == "cpu" else s.gpu_load, self.grey)
             else:
-                tile(image, box, content(kind, s, self.alert))
+                tile(image, box, content(kind, s, self.alert, self.theme))
         return image
+
+    def splash_frames(self):
+        """The start-up screen, as [(picture, seconds)]: a still one, or a short animation."""
+        if self.theme == "halloween":
+            return halloween_splash(self.width, self.height)
+        return [(self.splash(), 2.0)]
 
     def splash(self):
         image = Image.new("L", (self.width, self.height))
@@ -317,3 +347,75 @@ class Screens:
         if block > CAP * scale:
             text(image, self.width // 2, y + CAP * scale + 3, "OLED", align="center")
         return image
+
+
+# --- halloween -------------------------------------------------------------------------------------------------------------
+
+BAT = ((-8, -2), (-6, -4), (-4, -3), (-2, -4), (-1, -2), (-1, -4), (0, -3), (1, -4), (1, -2), (2, -4), (4, -3),
+       (6, -4), (8, -2), (6, -1), (5, 0), (4, -1), (2, 0), (1, 1), (0, 2), (-1, 1), (-2, 0), (-4, -1), (-5, 0),
+       (-6, -1))  # wings spread, two ears, in units of its scale
+
+
+def stitches(image, x1, x2, y):
+    """A separator stitched like a scar: a line crossed by a short stitch every 6 pixels, one pixel above and below
+    (a tile's content never reaches the rows next to its edge)."""
+    ImageDraw.Draw(image).line((x1, y, x2, y), fill=255)
+    for x in range(x1 + 3, x2 - 1, 6):
+        for dy in (-1, 1):
+            if 0 <= y + dy < image.height:
+                image.putpixel((x, y + dy), 255)
+
+
+def bat(image, cx, cy, scale, wings_up=True):
+    points = [(cx + px * scale, cy + py * scale * (1 if wings_up or py >= 0 else 0.6)) for px, py in BAT]
+    ImageDraw.Draw(image).polygon(points, fill=255)
+
+
+def pumpkin(image, cx, cy, r, lit=True):
+    """A jack-o'-lantern: the body outlined with its ribs, a stem, and the carved face glowing (or just outlined,
+    the candle flickering low)."""
+    d = ImageDraw.Draw(image)
+    rx, ry = r * 1.2, r
+    d.rectangle((cx - 1, cy - ry - max(2, r // 4), cx + 1, cy - ry + 1), fill=255)
+    d.ellipse((cx - rx, cy - ry, cx + rx, cy + ry), outline=255)
+    d.arc((cx - rx * 0.5, cy - ry, cx + rx * 0.5, cy + ry), 250, 290, fill=255)
+    d.arc((cx - rx * 0.5, cy - ry, cx + rx * 0.5, cy + ry), 70, 110, fill=255)
+
+    def poly(*points):
+        return [(cx + px * rx, cy + py * ry) for px, py in points]
+    face = [poly((-0.6, -0.05), (-0.15, -0.05), (-0.38, -0.5)), poly((0.15, -0.05), (0.6, -0.05), (0.38, -0.5)),
+            poly((-0.65, 0.22), (-0.35, 0.32), (-0.2, 0.22), (0.2, 0.22), (0.35, 0.32), (0.65, 0.22), (0.45, 0.6),
+                 (0, 0.68), (-0.45, 0.6))]
+    for hole in face:
+        d.polygon(hole, fill=255 if lit else 0, outline=255)
+
+
+def halloween_splash(width, height):
+    """A jack-o'-lantern beside the logo; its candle flickers while a bat flies past, about 2.5 s."""
+    r = max(5, min(height // 2 - 4, width // 7))
+    cx, cy = round(r * 1.2) + 2, height // 2 + max(1, r // 6)
+    x0 = cx + round(r * 1.2) + 4
+    title = "BC-250"
+    room = width - x0 - 2
+    scale = fit_scale(title, room, height - CAP - 4) or fit_scale(title, room, height)
+    base = Image.new("L", (width, height))
+    if scale:
+        block = CAP * scale + (CAP + 3 if height >= CAP * (scale + 1) + 6 else 0)
+        y = (height - block) // 2 + (2 if height >= 48 else 0)
+        tx = x0 + room // 2
+        text(base, tx, y, title, scale, align="center")
+        if block > CAP * scale:
+            text(base, tx, y + CAP * scale + 3, "BOO!" if room < text_width("HAPPY HALLOWEEN") else "HAPPY HALLOWEEN",
+                 align="center")
+    frames, steps = [], 14
+    scale_bat = 1.2 if height < 48 else 2
+    for i in range(steps):
+        image = base.copy()
+        pumpkin(image, cx, cy, r, lit=i % 5 != 3)  # the candle gutters now and then
+        x = width + 10 - (width + 20) * i / (steps - 1)
+        bat(image, x, 4 * scale_bat + 1 + (1 if i % 2 else 0), scale_bat, wings_up=i % 2 == 0)
+        frames.append((image, 0.18))
+    last = base.copy()
+    pumpkin(last, cx, cy, r)
+    frames.append((last, 0.6))
+    return frames

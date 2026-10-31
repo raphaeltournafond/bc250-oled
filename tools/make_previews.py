@@ -15,6 +15,9 @@ from bc250_oled.screens import Screens  # noqa: E402
 def pictures():
     yield "preview-0.96.png", sheet(sample_pictures(Screens(128, 64)), tint="yellow-blue", zoom=4)
     yield "pages-0.96.png", sheet(sample_pictures(Screens(128, 64, ["overview", "system", "graphs"])), zoom=3)
+    halloween = Screens(128, 64, ["overview", "system"], theme="halloween")
+    splash = sample_pictures(Screens(128, 64, theme="halloween"), splash=True)
+    yield "halloween-0.96.png", sheet([splash[1]] + sample_pictures(halloween), zoom=3)
     for name in ("0.49", "0.66", "0.91", "1.5"):
         p = PRESETS[name]
         grey = p.driver in GREYSCALE

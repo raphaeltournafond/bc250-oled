@@ -12,7 +12,7 @@ import time
 from . import __version__
 from .displays import (ADDRESSES, DEFAULT_PRESET, DRIVERS, GREYSCALE, PRESETS, Link, Panel, buses,
                        displays_in, find, open_device, probe, remember, remembered, resolve)
-from .screens import PAGES, Screens
+from .screens import PAGES, THEMES, Screens
 from .sensors import SAMPLE, Sensors
 
 SHIFTS = ((0, 0), (1, 0), (1, 1), (0, 1))  # burn-in care: the picture moves by a pixel every few minutes
@@ -58,6 +58,8 @@ def display_options(parser):
     group.add_argument("--pages", help=f"comma-separated, shown in turn: {', '.join(PAGES)} (default: what fits "
                                        "the size)")
     group.add_argument("--alert", type=float, default=90, help="°C at which a temperature shows inverted (90)")
+    group.add_argument("--theme", choices=THEMES, default="classic", help="look: classic, or halloween (pumpkins, "
+                                                                           "a bat, dripping lines, BOO! when hot)")
 
 
 def link_options(parser):
@@ -71,7 +73,7 @@ def link_options(parser):
 
 def make_screens(args, driver, width, height):
     pages = args.pages.split(",") if args.pages else None
-    return Screens(width, height, pages, args.alert, grey=driver in GREYSCALE)
+    return Screens(width, height, pages, args.alert, grey=driver in GREYSCALE, theme=args.theme)
 
 
 def locate(args):
@@ -145,8 +147,9 @@ def cmd_run(args):
                     f"{'status byte' if panel._status_works else 'no status byte'})"
                     + (f", back after {failures} tries" if failures else ""))
                 if failures == 0 and not args.no_splash:
-                    panel.show(screens.splash(), full=True)
-                    time.sleep(2)
+                    for n, (picture, seconds) in enumerate(screens.splash_frames()):
+                        panel.show(picture, full=n == 0)
+                        time.sleep(seconds)
                 failures, hidden, started, last_wake = 0, False, time.monotonic(), time.monotonic()
                 last_report, reported = time.monotonic(), 0
             stats = sensors.read()
@@ -299,8 +302,9 @@ def sample_pictures(screens, stats=SAMPLE, splash=False):
         load = 45 + 30 * math.sin(i / 9) * math.cos(i / 23)
         screens.record(type(stats)(**{**stats.__dict__, "cpu_load": load, "gpu_load": 100 - load}))
     screens.record(stats)
-    if splash:
-        return [screens.splash()]
+    if splash:  # a still start-up screen, or three moments of an animated one
+        frames = [picture for picture, _ in screens.splash_frames()]
+        return frames if len(frames) == 1 else [frames[1], frames[len(frames) // 2], frames[-1]]
     return [screens.render(stats, i) for i in range(len(screens.screens(stats)))]
 
 
