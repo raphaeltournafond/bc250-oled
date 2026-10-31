@@ -16,8 +16,42 @@ has them. The layout adapts to the display's size, from 64x32 to 128x128:
 |---|---|
 | ![](docs/preview-1.5.png) | ![](docs/pages-0.96.png) |
 
-> **Status: early.** It runs against emulated displays (see [tests](tests/test_basic.py)); the first test on a real
-> BC-250 is still to come. Issues and photos welcome.
+> **Status: early.** Working on a BC-250 with a 0.96" 128x64 display on TPMS1. The other sizes are only tested
+> against emulated displays (see [tests](tests/test_basic.py)). Issues and photos welcome.
+
+## Quick start
+
+1. **Get an I2C OLED module**, the 4-pin kind (GND, VCC, SCL, SDA). A 0.96" 128x64 is the default; other sizes are
+   listed [below](#supported-displays).
+2. **Measure, board on, display unplugged.** On the TPMS1 header (2.0 mm pitch, lower-left of the board), pin 9 and
+   pins 4 and 6 should read about 3.3 V; pin 2 is ground. [Details](#check-with-the-multimeter-board-on-display-not-connected).
+3. **Wire it, board off:**
+
+   | Display | GND | VCC | SCL | SDA |
+   |---|---|---|---|---|
+   | TPMS1 pin | 2 | 9 (3.3 V, **never 5 V**) | 4 | 6 |
+
+4. **Install, on the BC-250:**
+
+   ```bash
+   git clone https://github.com/raphaeltournafond/bc250-oled ~/bc250-oled
+   bash ~/bc250-oled/setup.sh
+   ```
+
+   It asks before each system change, finds the display, and starts it at every boot. For a display other than the
+   0.96", add its preset, for example `bash ~/bc250-oled/setup.sh --preset 1.3`.
+5. **Optional:** pages that change, a display mounted upside down, off at night:
+
+   ```bash
+   bash ~/bc250-oled/setup.sh --pages overview,system,graphs --rotate 180 --night 23:00-07:30
+   ```
+
+   Setup remembers the options, and new ones replace them: give all the ones you want each time.
+   [All options](#install).
+
+The screen stays dark? See [Check from Linux](#check-from-linux). The usual suspects are SCL and SDA swapped, or a
+display that needs a full power off and on after rewiring. Update later with
+`git -C ~/bc250-oled pull && bash ~/bc250-oled/setup.sh`.
 
 ## Supported displays
 
