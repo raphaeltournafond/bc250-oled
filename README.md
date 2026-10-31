@@ -131,13 +131,21 @@ Then power off, connect the four wires, and power on.
 bash setup.sh
 ```
 
-The installer looks for the display and lists every I2C bus, for example:
+The installer looks for the display, chipset SMBus port 0 first, and stops at the first one found. On a BC-250:
 
 ```
-  i2c-1   SMBus PIIX4 adapter port 0 at 0b00            display at 0x3C (answers quick), byte writes
-  i2c-2   SMBus PIIX4 adapter port 2 at 0b00            -
-  i2c-3   AMDGPU DM i2c hw bus 0                         -
+  i2c-4   SMBus PIIX4 adapter port 0 at 0b00               display at 0x3C (answers read), byte writes
+  i2c-5   SMBus PIIX4 adapter port 2 at 0b00               not searched (display already found; --everywhere to search anyway)
+  ...
 ```
+
+It remembers where the display is, by the adapter's name since bus numbers can change between boots. From then on,
+the service goes straight there and never touches the other buses. Run `setup.sh` again after moving the display.
+
+Ports 2 and 3 of the chipset SMBus have nothing connected, and a transfer there hangs for a quarter of a second
+("SMBus Timeout!" in the kernel log). They are the same controller as port 0, switched between pins, so a hung
+transfer there can disturb the display. That's why the search stops early, and leaves a bus alone after its first
+timeout.
 
 You can run that check on its own at any time:
 
@@ -177,9 +185,9 @@ Every 10 seconds (`--keepalive`) the program reads the display's status byte, wh
 was switched off, the program sets it up again and resends the picture. Modules without a status byte are set up
 again once a minute instead. The log line at start says which kind you have.
 
-**It worked, then the display can't be found any more, even after restarting the service?** The SMBus may be
-locked: it is shared with the board's firmware, and a collision between the two can leave it stuck until the power
-goes off. Shut the BC-250 down completely, then power it on (a reboot may not cut the display's power). The kernel
+**It worked, then the display can't be found any more, even after restarting the service?** The display or its bus
+may be stuck: the bus is shared with the board's firmware and with the hanging ports above, and the display can be
+left halfway through a transfer until its power goes off. Shut the BC-250 down completely, then power it on (a reboot may not cut the display's power). The kernel
 log says so when it happens:
 
 ```bash

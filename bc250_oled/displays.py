@@ -50,9 +50,11 @@ def resolve(preset=None, driver=None, size=None):
 
 
 # The chipset SMBus is shared with the board's firmware: while the firmware holds it, the kernel refuses a transfer
-# with "busy" (EBUSY, from the i2c-piix4 driver), or times it out. Nothing went out on the bus, and it's free again
-# within milliseconds, so that one transfer is simply tried again.
-TRANSIENT = (errno.EBUSY, errno.EAGAIN, errno.ETIMEDOUT)
+# with "busy" (EBUSY, from the i2c-piix4 driver). Nothing went out on the bus, and it's free again within
+# milliseconds, so that one transfer is simply tried again. A *timeout* is different and never retried: the transfer
+# did start and hung for a quarter of a second (a port with nothing on it), and the chipset's SMBus ports 0, 2, 3
+# and 4 are one controller switched between pins, so a hung transfer on one can leave garbage on the display's port.
+TRANSIENT = (errno.EBUSY, errno.EAGAIN)
 RETRY_FOR = 1.0  # seconds of busy bus before giving up
 
 
@@ -267,7 +269,7 @@ class Panel:
 # --- read-only search -----------------------------------------------------------------------------------------------------
 
 def buses():
-    """[(number, adapter name)] of every I2C bus Linux exposes as /dev/i2c-N."""
+    """[(number, adapter name)] of every I2C bus Linux exposes as /dev/i2c-N, in search order."""
     found = []
     for folder in glob.glob("/sys/bus/i2c/devices/i2c-*"):
         try:
@@ -280,13 +282,22 @@ def buses():
         except OSError:
             name = "?"
         found.append((number, name))
-    # the chipset SMBus first: that's where the BC-250's headers lead
-    return sorted(found, key=lambda b: (not b[1].startswith("SMBus"), b[0]))
+    return search_order(found)
+
+
+def search_order(found):
+    # the chipset SMBus first, its port 0 first of all: that's where the BC-250's TPMS1 header leads
+    return sorted(found, key=lambda b: (not b[1].startswith("SMBus"), " port 0 " not in b[1] + " ", b[0]))
+
+
+class BusTimeout(OSError):
+    """A transfer on this bus hung (nothing connected, or lines held low): don't knock there again."""
 
 
 def probe(bus, address):
     """How something at `address` answered: "read" (a one-byte read: SSD1306s give their status byte), "quick" (only
-    the address, no data), None if nothing did. Raises PermissionError if the bus can't be opened (run setup.sh)."""
+    the address, no data), None if nothing did. Raises PermissionError if the bus can't be opened (run setup.sh),
+    BusTimeout if a transfer hung."""
     from smbus2 import I2cFunc, SMBus
     try:
         smbus = SMBus(bus)
@@ -295,32 +306,77 @@ def probe(bus, address):
     except OSError:
         return None
     try:
-        try:
-            retry(smbus.read_byte, address)
-            return "read"
-        except OSError:
-            pass
+        attempts = [("read", smbus.read_byte)]
         if smbus.funcs & I2cFunc.SMBUS_QUICK:
+            attempts.append(("quick", smbus.write_quick))
+        for how, call in attempts:
             try:
-                retry(smbus.write_quick, address)
-                return "quick"
-            except OSError:
-                pass
+                retry(call, address)
+                return how
+            except OSError as e:
+                if e.errno == errno.ETIMEDOUT:
+                    raise BusTimeout(e.errno, f"i2c-{bus}: transfers time out")
         return None
     finally:
         smbus.close()
 
 
-def find():
-    """[(bus, address, adapter name)] of everything answering at a display address, and the buses that couldn't be
-    opened."""
-    found, denied = [], []
+def find(everywhere=False):
+    """Knocks at the display addresses bus after bus, until the first display (or on every bus, `everywhere`).
+    Returns {bus: (name, {address: how it answered}) or "denied", "timeout", "skipped"}."""
+    result, found = {}, False
     for number, name in buses():
-        for address in ADDRESSES:
-            try:
-                if probe(number, address):
-                    found.append((number, address, name))
-            except PermissionError:
-                denied.append(number)
-                break
-    return found, denied
+        if found and not everywhere:
+            result[number] = (name, "skipped")
+            continue
+        answers = {}
+        try:
+            for address in ADDRESSES:
+                answers[address] = probe(number, address)
+            result[number] = (name, answers)
+            found = found or any(answers.values())
+        except PermissionError:
+            result[number] = (name, "denied")
+        except BusTimeout:
+            result[number] = (name, "timeout")
+    return result
+
+
+def displays_in(result):
+    """[(bus, address)] of the displays in a find() result."""
+    return [(bus, address) for bus, (name, answers) in result.items() if isinstance(answers, dict)
+            for address, how in answers.items() if how]
+
+
+# --- where the display was found last -------------------------------------------------------------------------------------
+# The service goes straight there instead of knocking on every bus at each start. Bus numbers can change from one boot
+# to the next, adapter names don't.
+
+def _memory_file():
+    config = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(config, "bc250-oled", "display")
+
+
+def remember(bus, address):
+    name = dict(buses()).get(bus)
+    if not name:
+        return
+    try:
+        os.makedirs(os.path.dirname(_memory_file()), exist_ok=True)
+        with open(_memory_file(), "w") as f:
+            f.write(f"{name}\n0x{address:02X}\n")
+    except OSError:
+        pass
+
+
+def remembered():
+    """(bus, address) where the display was last found, if that adapter is still there."""
+    try:
+        with open(_memory_file()) as f:
+            name, address = f.read().splitlines()[:2]
+    except (OSError, ValueError):
+        return None
+    for number, adapter in buses():
+        if adapter == name:
+            return number, int(address, 16)
+    return None

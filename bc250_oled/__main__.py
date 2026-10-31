@@ -10,7 +10,8 @@ import threading
 import time
 
 from . import __version__
-from .displays import ADDRESSES, DEFAULT_PRESET, DRIVERS, GREYSCALE, PRESETS, Link, Panel, buses, find, open_device, probe, resolve
+from .displays import (ADDRESSES, DEFAULT_PRESET, DRIVERS, GREYSCALE, PRESETS, Link, Panel, buses,
+                       displays_in, find, open_device, probe, remember, remembered, resolve)
 from .screens import PAGES, Screens
 from .sensors import SAMPLE, Sensors
 
@@ -69,7 +70,8 @@ def make_screens(args, driver, width, height):
 
 
 def locate(args):
-    """(bus, address) from the options, else the first display found."""
+    """(bus, address): from the options, else where the display was found last (nothing else is touched), else the
+    first display found by knocking bus after bus."""
     if args.bus is not None:
         if args.address is not None:
             return args.bus, args.address
@@ -77,12 +79,17 @@ def locate(args):
             if probe(args.bus, address):
                 return args.bus, address
         return args.bus, ADDRESSES[0]
-    found, denied = find()
-    found = [(b, a) for b, a, _ in found if args.address in (None, a)]
+    last = remembered()
+    if last and args.address in (None, last[1]):
+        return last
+    result = find()
+    found = [(b, a) for b, a in displays_in(result) if args.address in (None, a)]
     if not found:
+        denied = [b for b, (_, answers) in result.items() if answers == "denied"]
         raise OSError("no display answers at 0x3C/0x3D on any I2C bus"
                       + (f" this account may open (no access to i2c-{', i2c-'.join(map(str, denied))}: run setup.sh)"
                          if denied else " (is it wired and powered? try: python -m bc250_oled detect)"))
+    remember(*found[0])
     return found[0]
 
 
@@ -174,6 +181,9 @@ def cmd_run(args):
             failures += 1
             if failures <= 3 or failures % 12 == 0:
                 log(f"display not reachable ({e}); trying again in 5 s (attempt {failures})")
+            if failures == 3 and device is None:
+                log("it doesn't answer where it was found last: unplugged, or the bus is locked (shut the BC-250 "
+                    "down completely, then power it on). Moved it? Run setup.sh to search again.")
             if device is not None:
                 try:
                     device._serial_interface.cleanup()
@@ -195,38 +205,41 @@ def cmd_detect(args):
     """Lists the I2C buses and what answers at the display addresses (0x3C/0x3D), sending no data."""
     lock = claim_display()  # raises InUse, reported by main
     try:
-        return find_displays()
+        return find_displays(args.everywhere)
     finally:
         if lock:
             lock.close()
 
 
-def find_displays():
-    found_any = False
-    listed = buses()
-    if not listed:
+def find_displays(everywhere=False):
+    if not buses():
         log("No I2C buses: load the driver with  sudo modprobe i2c-dev  (setup.sh makes it permanent).")
         return 1
-    for number, name in listed:
-        try:
-            answers = {a: probe(number, a) for a in ADDRESSES}
-        except PermissionError:
-            log(f"  i2c-{number:<3} {name[:48]:<48} no access (run setup.sh, or try with sudo)")
-            continue
-        status = ", ".join(f"display at 0x{a:02X} (answers {how})" for a, how in answers.items() if how) or "-"
-        if any(answers.values()):
-            found_any = True
-            try:
-                link = Link(number, next(a for a, how in answers.items() if how))
-                status += f", {link.mode} writes"
-                link.cleanup()
-            except OSError as e:
-                status += f", but can't write: {e}"
+    result = find(everywhere)
+    for number, (name, answers) in result.items():
+        if answers == "denied":
+            status = "no access (run setup.sh, or try with sudo)"
+        elif answers == "timeout":
+            status = "transfers time out (nothing connected?): left alone"
+        elif answers == "skipped":
+            status = "not searched (display already found; --everywhere to search anyway)"
+        else:
+            status = ", ".join(f"display at 0x{a:02X} (answers {how})" for a, how in answers.items() if how) or "-"
+            if any(answers.values()):
+                try:
+                    link = Link(number, next(a for a, how in answers.items() if how))
+                    status += f", {link.mode} writes"
+                    link.cleanup()
+                except OSError as e:
+                    status += f", but can't write: {e}"
         log(f"  i2c-{number:<3} {name[:48]:<48} {status}")
-    if not found_any:
+    found = displays_in(result)
+    if not found:
         log("No display found. Check the wiring (README, 'How to connect') and that the board is on: the header's "
-            "3.3 V pin only has power while the BC-250 runs.")
+            "3.3 V pin only has power while the BC-250 runs. It worked before? The bus may be locked: shut the "
+            "BC-250 down completely, then power it on.")
         return 1
+    remember(*found[0])  # the service goes straight there from now on
     return 0
 
 
@@ -354,6 +367,8 @@ def main(argv=None):
     run.set_defaults(func=cmd_run)
 
     detect = commands.add_parser("detect", help="find the display (sends no data)")
+    detect.add_argument("--everywhere", action="store_true",
+                        help="keep searching the other buses after finding a display")
     detect.set_defaults(func=cmd_detect)
 
     test = commands.add_parser("test", help="test patterns and timings on the display, for wiring trouble")

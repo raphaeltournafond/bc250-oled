@@ -98,42 +98,57 @@ class I2cFunc(enum.IntFlag):
     SMBUS_WRITE_I2C_BLOCK = 0x08000000
 
 
-def fake_smbus2(controller, funcs, reads=True, busy_every=0):
-    """A bus with the display at 0x3C; reads=False: one that only answers writes, as many modules do;
-    busy_every=N: every Nth transfer is refused with EBUSY, as the BC-250's firmware does while it holds the bus."""
-    calls = [0]
+BC250_BUSES = [(0, "AMDGPU DM i2c hw bus 0"), (1, "AMDGPU DM i2c hw bus 1"), (2, "AMDGPU DM aux hw bus 0"),
+               (3, "AMDGPU DM aux hw bus 1"), (4, "SMBus PIIX4 adapter port 0 at 0b00"),
+               (5, "SMBus PIIX4 adapter port 2 at 0b00"), (6, "SMBus PIIX4 adapter port 3 at 0b00"),
+               (7, "SMBus PIIX4 adapter port 4 at 0b00"), (8, "SMBus PIIX4 adapter port 1 at 0b20")]
 
-    def busy():
-        calls[0] += 1
-        if busy_every and calls[0] % busy_every == 0:
-            raise OSError(errno.EBUSY, "Device or resource busy")
+
+def fake_smbus2(controller, funcs, reads=True, busy_every=0, display_bus=None, timeout_buses=()):
+    """A bus with the display at 0x3C; reads=False: one that only answers writes, as many modules do;
+    busy_every=N: every Nth transfer is refused with EBUSY, as the BC-250's firmware does while it holds the bus;
+    display_bus: the display is on that bus only (default: any); timeout_buses: transfers there hang and time out,
+    as on the BC-250's unconnected SMBus ports. module.touched lists the bus of every transfer."""
+    calls = [0]
+    touched = []
 
     class SMBus:
         def __init__(self, bus):
             self.funcs = funcs
+            self.bus = bus
+
+        def _transfer(self):
+            touched.append(self.bus)
+            if self.bus in timeout_buses:
+                raise OSError(errno.ETIMEDOUT, "Connection timed out")
+            calls[0] += 1
+            if busy_every and calls[0] % busy_every == 0:
+                raise OSError(errno.EBUSY, "Device or resource busy")
+            if display_bus is not None and self.bus != display_bus:
+                raise OSError(errno.ENXIO, "No such device or address")
 
         def read_byte(self, address):
-            busy()
+            self._transfer()
             if address != 0x3C or not reads:
                 raise OSError(121, "Remote I/O error")
             return 0x03 if controller.on else 0x43  # SSD1306 status: bit 6 set while the display is off
 
         def write_quick(self, address):
-            busy()
+            self._transfer()
             if address != 0x3C:
                 raise OSError(121, "Remote I/O error")
 
         def write_byte_data(self, address, register, value):
-            busy()
+            self._transfer()
             controller.feed(register, [value])
 
         def write_i2c_block_data(self, address, register, values):
-            busy()
+            self._transfer()
             assert len(values) <= 32
             controller.feed(register, values)
 
         def i2c_rdwr(self, *messages):
-            busy()
+            self._transfer()
             for m in messages:
                 controller.feed(m[0], m[1:])
 
@@ -141,7 +156,7 @@ def fake_smbus2(controller, funcs, reads=True, busy_every=0):
             pass
 
     module = types.ModuleType("smbus2")
-    module.SMBus, module.I2cFunc = SMBus, I2cFunc
+    module.SMBus, module.I2cFunc, module.touched = SMBus, I2cFunc, touched
     module.i2c_msg = types.SimpleNamespace(write=lambda address, data: list(data))
     return module
 
@@ -149,16 +164,24 @@ def fake_smbus2(controller, funcs, reads=True, busy_every=0):
 class Fixture(unittest.TestCase):
     def setUp(self):
         self._smbus2 = sys.modules.get("smbus2")
+        self._config = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp()  # where the display was found: not in the real ~/.config
+        self._buses = displays.buses
 
     def tearDown(self):
+        displays.buses = self._buses
+        if self._config is None:
+            os.environ.pop("XDG_CONFIG_HOME", None)
+        else:
+            os.environ["XDG_CONFIG_HOME"] = self._config
         if self._smbus2 is None:
             sys.modules.pop("smbus2", None)
         else:
             sys.modules["smbus2"] = self._smbus2
 
-    def use_bus(self, kind, funcs, reads=True, busy_every=0):
+    def use_bus(self, kind, funcs, reads=True, busy_every=0, **layout):
         controller = Controller(kind)
-        sys.modules["smbus2"] = fake_smbus2(controller, funcs, reads, busy_every)
+        sys.modules["smbus2"] = fake_smbus2(controller, funcs, reads, busy_every, **layout)
         return controller
 
 
@@ -428,18 +451,56 @@ class OneAtATime(unittest.TestCase):
 
 
 class Detect(Fixture):
+    FUNCS = I2cFunc.SMBUS_QUICK | I2cFunc.SMBUS_WRITE_BYTE_DATA
+
+    def setUp(self):
+        super().setUp()
+        displays.buses = lambda: displays.search_order(BC250_BUSES)
+
     def test_modules_that_ignore_reads_are_found(self):
-        old = displays.buses
-        displays.buses = lambda: [(0, "AMDGPU DM i2c hw bus 0"), (3, "SMBus PIIX4 adapter port 0 at 0b00")]
-        try:
-            for reads, how in ((True, "read"), (False, "quick")):
-                self.use_bus("ssd1306", I2cFunc.SMBUS_QUICK | I2cFunc.SMBUS_WRITE_BYTE_DATA, reads)
-                self.assertEqual(displays.probe(3, 0x3C), how)
-                self.assertIsNone(displays.probe(3, 0x3D))
-            self.use_bus("ssd1306", I2cFunc.SMBUS_WRITE_BYTE_DATA, reads=False)  # no quick write either
-            self.assertIsNone(displays.probe(3, 0x3C))
-        finally:
-            displays.buses = old
+        for reads, how in ((True, "read"), (False, "quick")):
+            self.use_bus("ssd1306", self.FUNCS, reads)
+            self.assertEqual(displays.probe(3, 0x3C), how)
+            self.assertIsNone(displays.probe(3, 0x3D))
+        self.use_bus("ssd1306", I2cFunc.SMBUS_WRITE_BYTE_DATA, reads=False)  # no quick write either
+        self.assertIsNone(displays.probe(3, 0x3C))
+
+    def test_the_search_stops_at_the_display(self):
+        """The BC-250: display on the chipset SMBus port 0 (i2c-4), ports 2 and 3 hang. Searched first, port 0 is
+        the only bus touched."""
+        self.use_bus("ssd1306", self.FUNCS, display_bus=4, timeout_buses={5, 6})
+        result = displays.find()
+        self.assertEqual(displays.displays_in(result), [(4, 0x3C)])
+        self.assertEqual(set(sys.modules["smbus2"].touched), {4})
+        self.assertTrue(all(answers == "skipped" for bus, (name, answers) in result.items() if bus != 4))
+
+    def test_hung_buses_are_left_alone(self):
+        """No display: each bus that hangs gets one transfer, never retried (each hangs for a quarter of a second,
+        and on the chipset SMBus a hung port can disturb the others)."""
+        self.use_bus("ssd1306", self.FUNCS, display_bus=99, timeout_buses={5, 6})
+        result = displays.find()
+        touched = sys.modules["smbus2"].touched
+        self.assertEqual((touched.count(5), touched.count(6)), (1, 1))
+        self.assertEqual((result[5][1], result[6][1]), ("timeout", "timeout"))
+        self.assertEqual(displays.displays_in(result), [])
+
+        def hangs():
+            raise OSError(errno.ETIMEDOUT, "Connection timed out")
+        calls = []
+        with self.assertRaises(OSError):
+            displays.retry(lambda: calls.append(1) or hangs())
+        self.assertEqual(len(calls), 1)
+
+    def test_the_service_goes_straight_to_the_display(self):
+        from bc250_oled.__main__ import locate, main
+        self.use_bus("ssd1306", self.FUNCS, display_bus=4, timeout_buses={5, 6})
+        self.assertEqual(main(["detect"]), 0)
+        self.assertEqual(displays.remembered(), (4, 0x3C))
+        # next boot, the bus numbers changed: the adapter's name still finds it, with nothing probed
+        displays.buses = lambda: displays.search_order([(n + 1, name) for n, name in BC250_BUSES])
+        sys.modules["smbus2"].touched.clear()
+        self.assertEqual(locate(types.SimpleNamespace(bus=None, address=None)), (5, 0x3C))
+        self.assertEqual(sys.modules["smbus2"].touched, [])
 
 
 class Run(Fixture):
