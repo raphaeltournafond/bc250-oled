@@ -4,8 +4,8 @@ BC-250 stats on one of those tiny I2C OLED displays, wired straight to a header 
 microcontroller: the board's own SMBus drives the display.
 
 <p>
-  <img src="docs/display-0.96.jpg" width="360" alt="A 0.96-inch OLED wired to a BC-250, showing CPU and GPU temperature and load, NVMe temperature, fan speed and power">
-  <img src="docs/wiring-tpms1.jpg" width="456" alt="The four wires on the BC-250's TPMS1 header: GND on pin 17/18, VCC 3.3 V on pin 9, SDA on pin 6, SCL on pin 4">
+  <img src="docs/display-0.96.jpg" height="300" alt="A 0.96-inch OLED wired to a BC-250, showing CPU and GPU temperature and load, NVMe temperature, fan speed and power">
+  <img src="docs/wiring-tpms1.jpg" height="300" alt="The four wires on the BC-250's TPMS1 header: GND on pin 17/18, VCC 3.3 V on pin 9, SDA on pin 6, SCL on pin 4">
 </p>
 
 CPU and GPU temperature, load and clock, plus NVMe temperature, fan RPM, power and VRM temperature when the machine
