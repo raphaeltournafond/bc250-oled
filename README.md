@@ -3,7 +3,10 @@
 BC-250 stats on one of those tiny I2C OLED displays, wired straight to a header on the board. No USB and no
 microcontroller: the board's own SMBus drives the display.
 
-![0.96" two-colour module](docs/preview-0.96.png)
+<p>
+  <img src="docs/display-0.96.jpg" width="360" alt="A 0.96-inch OLED wired to a BC-250, showing CPU and GPU temperature and load, NVMe temperature, fan speed and power">
+  <img src="docs/wiring-tpms1.jpg" width="456" alt="The four wires on the BC-250's TPMS1 header: GND on pin 17/18, VCC 3.3 V on pin 9, SDA on pin 6, SCL on pin 4">
+</p>
 
 CPU and GPU temperature, load and clock, plus NVMe temperature, fan RPM, power and VRM temperature when the machine
 has them. The layout adapts to the display's size, from 64x32 to 128x128:
@@ -12,9 +15,13 @@ has them. The layout adapts to the display's size, from 64x32 to 128x128:
 |---|---|---|
 | ![](docs/preview-0.49.png) | ![](docs/preview-0.66.png) | ![](docs/preview-0.91.png) |
 
-| 1.5" 128x128 greyscale | 0.96"/1.3" 128x64, all pages (`--pages overview,system,graphs`) |
+| 0.96" two-colour (yellow/blue) | 1.5" 128x128 greyscale |
 |---|---|
-| ![](docs/preview-1.5.png) | ![](docs/pages-0.96.png) |
+| ![](docs/preview-0.96.png) | ![](docs/preview-1.5.png) |
+
+| 0.96"/1.3" 128x64, all pages (`--pages overview,system,graphs`) |
+|---|
+| ![](docs/pages-0.96.png) |
 
 > **Status: early.** Working on a BC-250 with a 0.96" 128x64 display on TPMS1. The other sizes are only tested
 > against emulated displays (see [tests](tests/test_basic.py)). Issues and photos welcome.
@@ -117,6 +124,11 @@ display VCC -->       3V -- [  9  10 ] -- LAD1
 
 Leave the other pins alone: they're the LPC bus (PCICLK, FRAME, LAD0-3...). 3VSB (pin 15) is the standby supply,
 on even while the board is off: the display would stay powered (and its pixels wearing) with the BC-250 shut down.
+
+How it looks wired. The board is upside down in this photo, so pin 1 is on the right. Ground can go on any GND
+pin; here it's on the last pair, 17/18.
+
+<img src="docs/wiring-tpms1.jpg" width="456" alt="The four wires on the BC-250's TPMS1 header: GND on pin 17/18, VCC 3.3 V on pin 9, SDA on pin 6, SCL on pin 4">
 
 > [!WARNING]
 > - **3.3 V only.** Never take VCC from a 5 V pin. The display module has pull-up resistors from SCL and SDA to its
