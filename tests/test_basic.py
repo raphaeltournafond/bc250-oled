@@ -6,6 +6,7 @@ import os
 import random
 import sys
 import tempfile
+import time
 import types
 import unittest
 
@@ -228,6 +229,7 @@ class Sensors(unittest.TestCase):
             reader = sensors.Sensors()
             first = reader.read()
             put("proc/stat", "cpu  200 0 200 1400 0 0 0 0 0 0")  # 200 busy of 800 ticks
+            time.sleep(0.05)  # Windows' clock ticks every ~15 ms: two reads in one tick measure no time
             second = reader.read()
         finally:
             sensors.SYS, sensors.PROC = old
