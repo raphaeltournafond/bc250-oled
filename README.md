@@ -233,7 +233,8 @@ bus that can do proper I2C transfers it uses them automatically.
 - **I2C_HEADER1** (3 pins: SCL, SDA, GND) is the PMBus to the board's voltage regulators. Don't put a display there:
   it has no power pin, and that bus sets the CPU and GPU voltages.
 - **USB instead:** an MCP2221A USB-to-I2C board on a USB port shows up as an I2C bus (Linux `hid-mcp2221` driver).
-  `detect` finds the display on it like on any other bus, with no soldering or header wiring.
+  Install with `bash setup.sh --all-buses` so your account can use it; `detect` then finds the display there,
+  with no soldering or header wiring.
 
 ## Install
 
@@ -249,7 +250,9 @@ What setup does:
 1. Installs the Python libraries in `~/bc250-oled/.venv`, private to this folder.
 2. Asks before each system change:
    - loads `i2c-dev` at boot;
-   - adds a udev rule so your account can open `/dev/i2c-*` (your own group, no extra group needed).
+   - adds a udev rule so your account can open the chipset SMBus port 0, the bus TPMS1 leads to, and no other
+     (the others reach the GPU and, on some, power controllers). Display on another bus, like a USB adapter?
+     `bash setup.sh --all-buses` opens them all.
 3. Looks for the display.
 4. Starts a systemd user service at boot, which keeps retrying until a display answers.
 
@@ -274,6 +277,7 @@ bash setup.sh --preset 1.3 --rotate 180 --night 23:00-07:30
 | `--no-shift` | | the picture moves by one pixel every 3 minutes against burn-in; this turns it off |
 | `--keepalive S` | 10 | seconds between checks that the display is still on, so it recovers after being replugged; 0 turns them off |
 | `--fan` | | (setup only) loads the Super I/O sensor driver for fan RPM and VRM temperature |
+| `--all-buses` | | (setup only) lets your account use every I2C bus, for a display that isn't on TPMS1 |
 
 Commands:
 

@@ -33,7 +33,12 @@ def claim_display():
         import fcntl
     except ImportError:  # Windows: previews and tests only
         return None
-    lock = open(os.path.join(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir(), "bc250-oled.lock"), "w")
+    # the user's own runtime folder; in the shared temp folder, a name of one's own, and "a" so that a link planted
+    # there by someone else can't make this empty a file
+    folder = os.environ.get("XDG_RUNTIME_DIR")
+    path = os.path.join(folder, "bc250-oled.lock") if folder else \
+        os.path.join(tempfile.gettempdir(), f"bc250-oled-{os.getuid()}.lock")
+    lock = open(path, "a")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
@@ -218,7 +223,7 @@ def find_displays(everywhere=False):
     result = find(everywhere)
     for number, (name, answers) in result.items():
         if answers == "denied":
-            status = "no access (run setup.sh, or try with sudo)"
+            status = "not open to your account (setup opens only the SMBus port 0 the display uses; --all-buses)"
         elif answers == "timeout":
             status = "transfers time out (nothing connected?): left alone"
         elif answers == "skipped":

@@ -4,6 +4,8 @@
 #   bash setup.sh                                   install, or update with the options used last time
 #   bash setup.sh --preset 1.3 --rotate 180          install/update with new options (remembered)
 #   bash setup.sh --fan                              also load the board's fan sensor driver (fan RPM, VRM temp)
+#   bash setup.sh --all-buses                        display on another I2C bus than the BC-250's SMBus port 0
+#                                                    (a USB adapter...): open every bus to your account (remembered)
 #   bash setup.sh --uninstall                        stop it and remove what setup added
 #
 # Display options: python -m bc250_oled run --help   (e.g. --preset, --size, --driver, --bus, --rotate, --contrast,
@@ -31,7 +33,7 @@ ask()  { # ask "question" -> 0 for yes (default), 1 for no; non-interactive runs
 }
 
 # --- arguments --------------------------------------------------------------------------------------------------------
-AUTOSTART=1 UNINSTALL=0 RESET_OPTIONS=0 FAN=0
+AUTOSTART=1 UNINSTALL=0 RESET_OPTIONS=0 FAN=0 ALL_BUSES=0
 RUN_OPTS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -39,7 +41,8 @@ while [[ $# -gt 0 ]]; do
     --uninstall) UNINSTALL=1; shift ;;
     --reset-options) RESET_OPTIONS=1; shift ;;
     --fan) FAN=1; shift ;;
-    -h|--help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --all-buses) ALL_BUSES=1; shift ;;
+    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     --no-shift|--no-splash) RUN_OPTS+=("$1"); shift ;;
     --*) RUN_OPTS+=("$1" "${2:?$1 needs a value}"); shift 2 ;;
     *) fail "Unexpected argument: $1 (see --help)" ;;
@@ -62,7 +65,8 @@ if [[ "$UNINSTALL" == 1 ]]; then
 fi
 
 # --- 1. remember options -------------------------------------------------------------------------------------------------
-[[ "$RESET_OPTIONS" == 1 ]] && rm -f "$OPTIONS_FILE"
+[[ "$RESET_OPTIONS" == 1 ]] && rm -f "$OPTIONS_FILE" "$STATE_DIR/all_buses"
+if [[ "$ALL_BUSES" == 1 ]]; then touch "$STATE_DIR/all_buses"; elif [[ -e "$STATE_DIR/all_buses" ]]; then ALL_BUSES=1; fi
 if [[ ${#RUN_OPTS[@]} -gt 0 ]]; then
   printf '%q ' "${RUN_OPTS[@]}" > "$OPTIONS_FILE"
   say "Options saved for next time: ${RUN_OPTS[*]}"
@@ -93,10 +97,18 @@ if [[ ! -e /dev/i2c-0 ]] || [[ ! -s "$MODULES" ]] || ! grep -q '^i2c-dev' "$MODU
     echo i2c-dev | sudo tee "$MODULES" >/dev/null
   fi
 fi
+# Only the bus the display is on: the others reach the GPU and, on some, the power controllers, which no program of
+# yours needs to talk to
 GROUP="$(id -gn)"
-RULE="SUBSYSTEM==\"i2c-dev\", GROUP=\"$GROUP\", MODE=\"0660\""
+if [[ "$ALL_BUSES" == 1 ]]; then
+  RULE="SUBSYSTEM==\"i2c-dev\", GROUP=\"$GROUP\", MODE=\"0660\""
+  WHICH="every I2C bus (/dev/i2c-*)"
+else
+  RULE="SUBSYSTEM==\"i2c-dev\", ATTR{name}==\"SMBus PIIX4 adapter port 0 at *\", GROUP=\"$GROUP\", MODE=\"0660\""
+  WHICH="the chipset SMBus port 0, where TPMS1 leads"
+fi
 if [[ "$(cat "$UDEV_RULE" 2>/dev/null)" != "$RULE" ]]; then
-  if ask "Let your account use the I2C buses (/dev/i2c-*, group '$GROUP')? (writes $UDEV_RULE)"; then
+  if ask "Let your account use $WHICH (group '$GROUP')? (writes $UDEV_RULE)"; then
     echo "$RULE" | sudo tee "$UDEV_RULE" >/dev/null
     sudo udevadm control --reload
     sudo udevadm trigger --subsystem-match=i2c-dev
