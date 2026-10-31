@@ -64,7 +64,7 @@ The screen stays dark? See [Check from Linux](#check-from-linux). The usual susp
 display that needs a full power off and on after rewiring. Update later with
 `git -C ~/bc250-oled pull && bash ~/bc250-oled/setup.sh`.
 
-### Halloween theme
+## Halloween theme
 
 ![Halloween theme on a 0.96" display](docs/halloween-0.96.png)
 
