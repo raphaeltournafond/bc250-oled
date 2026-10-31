@@ -28,9 +28,13 @@ has them. The layout adapts to the display's size, from 64x32 to 128x128:
 
 ## Quick start
 
+> [!CAUTION]
+> **You wire your board at your own risk.** A wire on the wrong pin can damage the BC-250 or the display, and I
+> can't be held responsible for that. **Measure before you connect** (step 2): it takes two minutes.
+
 1. **Get an I2C OLED module**, the 4-pin kind (GND, VCC, SCL, SDA). A 0.96" 128x64 is the default; other sizes are
    listed [below](#supported-displays).
-2. **Measure, board on, display unplugged.** On the TPMS1 header (2.0 mm pitch, lower-left of the board), pin 9 and
+2. **Measure first, board on, display unplugged.** On the TPMS1 header (2.0 mm pitch, lower-left of the board), pin 9 and
    pins 4 and 6 should read about 3.3 V; pins 17 and 18 are ground. [Details](#check-with-the-multimeter-board-on-display-not-connected).
 3. **Wire it, board off:**
 
@@ -132,8 +136,9 @@ How it looks wired, with standard Dupont jumpers. The board is upside down in th
 > [!WARNING]
 > - **3.3 V only.** Never take VCC from a 5 V pin. The display module has pull-up resistors from SCL and SDA to its
 >   VCC: on 5 V they would put 5 V on the board's SMBus, which is a 3.3 V bus shared with other chips.
-> - The pinout comes from community documentation (credited below), confirmed in practice by a user who wired a
->   128x64 display to TPMS1's SDA and SCL. Your board revision could differ: **measure before you connect**.
+> - The pinout comes from community documentation (credited below) and works on my board, but yours could differ:
+>   **measure before you connect**. You wire your board at your own risk: I can't be held responsible for damage
+>   from a wrong connection.
 
 ### Check with the multimeter (board on, display not connected)
 
@@ -327,4 +332,4 @@ SMBus block and byte-at-a-time writes, and check that every partial update leave
   and its community.
 - Display drivers: [luma.oled](https://github.com/rm-hull/luma.oled).
 
-MIT license.
+MIT license. The software and these instructions come with no warranty: see [LICENSE](LICENSE).
