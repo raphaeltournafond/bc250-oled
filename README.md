@@ -31,12 +31,12 @@ has them. The layout adapts to the display's size, from 64x32 to 128x128:
 1. **Get an I2C OLED module**, the 4-pin kind (GND, VCC, SCL, SDA). A 0.96" 128x64 is the default; other sizes are
    listed [below](#supported-displays).
 2. **Measure, board on, display unplugged.** On the TPMS1 header (2.0 mm pitch, lower-left of the board), pin 9 and
-   pins 4 and 6 should read about 3.3 V; pin 2 is ground. [Details](#check-with-the-multimeter-board-on-display-not-connected).
+   pins 4 and 6 should read about 3.3 V; pins 17 and 18 are ground. [Details](#check-with-the-multimeter-board-on-display-not-connected).
 3. **Wire it, board off:**
 
    | Display | GND | VCC | SCL | SDA |
    |---|---|---|---|---|
-   | TPMS1 pin | 2 | 9 (3.3 V, **never 5 V**) | 4 | 6 |
+   | TPMS1 pin | 17 or 18 | 9 (3.3 V, **never 5 V**) | 4 | 6 |
 
 4. **Install, on the BC-250:**
 
@@ -92,16 +92,16 @@ headers). It carries the board's main SMBus and a 3.3 V supply that's on while t
 ### What you need
 
 - The display, I2C version.
-- 4 female-to-female jumper wires with a **2.0 mm** connector on the board side. TPMS1 has 2.0 mm pitch, not the
-  usual 2.54 mm: standard Dupont jumpers are too wide to sit side by side. Use 2.0 mm jumpers, a 2.0 mm to 2.54 mm
-  adapter cable, or solder.
+- 4 female-to-female jumper wires. TPMS1 has 2.0 mm pitch, not the usual 2.54 mm. Standard 2.54 mm Dupont jumpers
+  still fit on pins 4 and 6 side by side, but then pin 2 next to them can't take a third one: that's why ground
+  goes on pin 17 or 18, at the far end. 2.0 mm jumpers or a 2.0 mm to 2.54 mm adapter cable also work.
 - A multimeter, to check the pins before plugging the display in.
 
 ### Pins
 
 | Display pin | TPMS1 pin | Signal on the board |
 |---|---|---|
-| GND | 2 (or 12, 17, 18) | ground |
+| GND | 17 or 18 (2 and 12 too, if your connectors fit) | ground |
 | VCC | 9 | 3V: 3.3 V, on while the board runs |
 | SCL | 4 | SMB_CLK_MAIN |
 | SDA | 6 | SMB_DATA_MAIN |
@@ -111,7 +111,7 @@ docs (likely a missing pin, as a key). Layout from [elektricM's BC-250 docs](htt
 with the four display pins marked:
 
 ```
-                  PCICLK -- [  1   2 ] -- GND            <-- display GND
+                  PCICLK -- [  1   2 ] -- GND
                    FRAME -- [  3   4 ] -- SMB_CLK_MAIN   <-- display SCL
                  PCIRST# -- [  5   6 ] -- SMB_DATA_MAIN  <-- display SDA
                     LAD3 -- [  7   8 ] -- LAD2
@@ -119,14 +119,13 @@ display VCC -->       3V -- [  9  10 ] -- LAD1
                     LAD0 -- [ 11  12 ] -- GND
                             [     14 ] -- S_PWRDWN#
                     3VSB -- [ 15  16 ] -- SERIRQ#
-                     GND -- [ 17  18 ] -- GND
+                     GND -- [ 17  18 ] -- GND            <-- display GND (17 or 18)
 ```
 
 Leave the other pins alone: they're the LPC bus (PCICLK, FRAME, LAD0-3...). 3VSB (pin 15) is the standby supply,
 on even while the board is off: the display would stay powered (and its pixels wearing) with the BC-250 shut down.
 
-How it looks wired. The board is upside down in this photo, so pin 1 is on the right. Ground can go on any GND
-pin; here it's on the last pair, 17/18.
+How it looks wired, with standard Dupont jumpers. The board is upside down in this photo, so pin 1 is on the right.
 
 <img src="docs/wiring-tpms1.jpg" width="456" alt="The four wires on the BC-250's TPMS1 header: GND on pin 17/18, VCC 3.3 V on pin 9, SDA on pin 6, SCL on pin 4">
 
@@ -141,7 +140,7 @@ pin; here it's on the last pair, 17/18.
 1. Find pin 1: the white triangle in the silkscreen next to the header. Pins are numbered in pairs: 1 and 2 face
    each other, then 3 and 4, and so on. If pin 13 is missing on yours, that gap confirms the orientation.
 2. Black probe on a ground (a metal screw hole, or the PSU connector's black wire).
-3. Pin 2: 0 V. Pin 9: **3.3 V**.
+3. Pins 17 and 18: 0 V. Pin 9: **3.3 V**.
 4. Pins 4 and 6 (SCL and SDA) idle high: about **3.3 V** as well. If anything reads 5 V, stop and check the pin
    numbering again.
 
