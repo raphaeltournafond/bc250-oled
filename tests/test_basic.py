@@ -2,10 +2,12 @@
 emulated display controller (through every kind of bus write) is exactly the picture.
 Run: python -m unittest discover -s tests -v"""
 import enum
+import errno
 import os
 import random
 import sys
 import tempfile
+import threading
 import time
 import types
 import unittest
@@ -96,29 +98,42 @@ class I2cFunc(enum.IntFlag):
     SMBUS_WRITE_I2C_BLOCK = 0x08000000
 
 
-def fake_smbus2(controller, funcs, reads=True):
-    """A bus with the display at 0x3C; reads=False: one that only answers writes, as many modules do."""
+def fake_smbus2(controller, funcs, reads=True, busy_every=0):
+    """A bus with the display at 0x3C; reads=False: one that only answers writes, as many modules do;
+    busy_every=N: every Nth transfer is refused with EBUSY, as the BC-250's firmware does while it holds the bus."""
+    calls = [0]
+
+    def busy():
+        calls[0] += 1
+        if busy_every and calls[0] % busy_every == 0:
+            raise OSError(errno.EBUSY, "Device or resource busy")
+
     class SMBus:
         def __init__(self, bus):
             self.funcs = funcs
 
         def read_byte(self, address):
+            busy()
             if address != 0x3C or not reads:
                 raise OSError(121, "Remote I/O error")
             return 0x43
 
         def write_quick(self, address):
+            busy()
             if address != 0x3C:
                 raise OSError(121, "Remote I/O error")
 
         def write_byte_data(self, address, register, value):
+            busy()
             controller.feed(register, [value])
 
         def write_i2c_block_data(self, address, register, values):
+            busy()
             assert len(values) <= 32
             controller.feed(register, values)
 
         def i2c_rdwr(self, *messages):
+            busy()
             for m in messages:
                 controller.feed(m[0], m[1:])
 
@@ -141,9 +156,9 @@ class Fixture(unittest.TestCase):
         else:
             sys.modules["smbus2"] = self._smbus2
 
-    def use_bus(self, kind, funcs, reads=True):
+    def use_bus(self, kind, funcs, reads=True, busy_every=0):
         controller = Controller(kind)
-        sys.modules["smbus2"] = fake_smbus2(controller, funcs, reads)
+        sys.modules["smbus2"] = fake_smbus2(controller, funcs, reads, busy_every)
         return controller
 
 
@@ -259,8 +274,8 @@ class Panel(Fixture):
             s.record(stats)
             yield s.render(stats, i // 4)
 
-    def check(self, kind, driver, width, height, funcs, rotate=0):
-        controller = self.use_bus(kind, funcs)
+    def check(self, kind, driver, width, height, funcs, rotate=0, busy_every=0):
+        controller = self.use_bus(kind, funcs, busy_every=busy_every)
         device = displays.open_device(driver, width, height, 1, 0x3C, rotate)
         device.persist = True
         panel = displays.Panel(device)
@@ -277,6 +292,8 @@ class Panel(Fixture):
         full = width * height // 8
         self.assertEqual(sent[0], full)
         self.assertLess(sum(sent[1:]), full * (len(sent) - 1), "every update sent the whole frame")
+        if busy_every:
+            self.assertGreater(device._serial_interface.retried[0], 0)
         return device._serial_interface.mode
 
     def test_partial_updates(self):
@@ -320,6 +337,34 @@ class Panel(Fixture):
                 got = controller.picture(128, 64, first_column).tobytes()
                 self.assertEqual(got, frames[1].point(lambda v: 255 * (v >= 128)).tobytes())
 
+    def test_a_busy_bus(self):
+        """The firmware takes the SMBus now and then: those transfers are tried again, and the picture stays exact."""
+        for funcs, every in ((I2cFunc.SMBUS_WRITE_BYTE_DATA, 97), (I2cFunc.I2C, 3)):  # i2c: few, big transfers
+            for kind in ("ssd1306", "sh1106"):
+                with self.subTest(link=funcs, controller=kind):
+                    self.check(kind, kind, 128, 64, funcs, busy_every=every)
+
+    def test_errors_that_are_not_busy_are_not_retried(self):
+        self.use_bus("ssd1306", I2cFunc.SMBUS_WRITE_BYTE_DATA)
+        calls = []
+
+        def unplugged():
+            calls.append(1)
+            raise OSError(errno.ENXIO, "No such device or address")
+        with self.assertRaises(OSError):
+            displays.retry(unplugged)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_bus_busy_for_too_long_gives_up(self):
+        old = displays.RETRY_FOR
+        displays.RETRY_FOR = 0.05
+        try:
+            with self.assertRaises(OSError) as raised:
+                displays.retry(lambda: (_ for _ in ()).throw(OSError(errno.EBUSY, "busy")))
+            self.assertEqual(raised.exception.errno, errno.EBUSY)
+        finally:
+            displays.RETRY_FOR = old
+
     def test_no_usable_write(self):
         self.use_bus("ssd1306", I2cFunc(0))
         with self.assertRaises(OSError):
@@ -352,12 +397,18 @@ class Detect(Fixture):
 
 class Run(Fixture):
     def test_run_draws_the_stats(self):
+        """Through a byte-at-a-time bus that is busy now and then, like the BC-250's."""
         from bc250_oled.__main__ import main
-        controller = self.use_bus("ssd1306", I2cFunc.SMBUS_WRITE_BYTE_DATA)
+        controller = self.use_bus("ssd1306", I2cFunc.SMBUS_WRITE_BYTE_DATA, busy_every=50)
         old = sensors.SYS, sensors.PROC
         sensors.SYS = sensors.PROC = tempfile.mkdtemp()  # no readings: dashes
         try:
-            self.assertEqual(main(["run", "--bus", "3", "--no-splash", "--frames", "2", "--interval", "0.05"]), 0)
+            result = []
+            runner = threading.Thread(target=lambda: result.append(main(
+                ["run", "--bus", "3", "--no-splash", "--frames", "2", "--interval", "0.05"])), daemon=True)
+            runner.start()
+            runner.join(30)
+            self.assertEqual(result, [0], "the display never got its pictures (it keeps reconnecting)")
         finally:
             sensors.SYS, sensors.PROC = old
         expected = screens.Screens(128, 64).render(Stats())

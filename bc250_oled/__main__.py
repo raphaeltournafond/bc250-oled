@@ -4,6 +4,7 @@ import datetime
 import math
 import signal
 import sys
+import threading
 import time
 
 from . import __version__
@@ -85,7 +86,8 @@ def cmd_run(args):
     night = parse_night(args.night)
     sensors = Sensors()
     running = [True]
-    signal.signal(signal.SIGTERM, lambda *_: running.__setitem__(0, False))
+    if threading.current_thread() is threading.main_thread():  # signals only reach the main thread (tests aren't)
+        signal.signal(signal.SIGTERM, lambda *_: running.__setitem__(0, False))
     device = None
     failures = frames = 0
     while running[0] and frames != args.frames:
@@ -97,11 +99,12 @@ def cmd_run(args):
                 if args.contrast is not None:
                     device.contrast(args.contrast)
                 log(f"{driver} {width}x{height} on I2C bus {bus} at 0x{address:02X} "
-                    f"({device._serial_interface.mode} writes)")
+                    f"({device._serial_interface.mode} writes)" + (f", back after {failures} tries" if failures else ""))
                 if failures == 0 and not args.no_splash:
                     panel.show(screens.splash(), full=True)
                     time.sleep(2)
                 failures, hidden, started, last_wake = 0, False, time.monotonic(), time.monotonic()
+                last_report, reported = time.monotonic(), 0
             stats = sensors.read()
             screens.record(stats)
             now = datetime.datetime.now()
@@ -128,12 +131,17 @@ def cmd_run(args):
                 if args.keepalive and time.monotonic() - last_wake >= args.keepalive:
                     panel.wake(args.contrast)
                     last_wake = time.monotonic()
+            retried = device._serial_interface.retried[0]
+            if retried != reported and time.monotonic() - last_report >= 600:
+                log(f"bus busy (the board's firmware using it): {retried - reported} transfers tried again in "
+                    f"{(time.monotonic() - last_report) / 60:.0f} min")
+                last_report, reported = time.monotonic(), retried
             frames += 1
             time.sleep(max(0.05, args.interval - time.monotonic() % args.interval))
         except OSError as e:
             failures += 1
-            if failures == 1 or failures % 60 == 0:
-                log(f"display not reachable ({e}); retrying every 5 s")
+            if failures <= 3 or failures % 12 == 0:
+                log(f"display not reachable ({e}); trying again in 5 s (attempt {failures})")
             if device is not None:
                 device.persist = True  # luma would otherwise try to clear it at exit, through the closed bus
                 try:
@@ -197,7 +205,8 @@ def cmd_test(args):
     for name, picture in steps:
         t = time.monotonic()
         panel.show(picture, full=True)
-        log(f"  {name}: {time.monotonic() - t:.2f} s for a full picture. Shown? (next in 3 s)")
+        log(f"  {name}: {time.monotonic() - t:.2f} s for a full picture, {link.retried[0]} busy-bus retries so "
+            f"far. Shown? (next in 3 s)")
         time.sleep(3)
     log("  unplug and plug the display back within the next 10 s...")
     time.sleep(10)

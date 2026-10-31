@@ -4,8 +4,10 @@ Safety: the BC-250's SMBus also reaches chips that matter (Super I/O, power cont
 writes anywhere but the display's own address, and detection only knocks at 0x3C and 0x3D, the two addresses every
 SSD1306/SH1106-class module uses: a one-byte read, or, for the many modules that ignore reads, the address alone with
 no data (an SMBus "quick write", what i2cdetect does at these addresses)."""
+import errno
 import glob
 import os
+import time
 from dataclasses import dataclass
 
 ADDRESSES = (0x3C, 0x3D)  # silkscreened "0x78"/"0x7A" on many modules (the same addresses, shifted left by one)
@@ -47,6 +49,27 @@ def resolve(preset=None, driver=None, size=None):
     return driver or base.driver, width, height
 
 
+# The chipset SMBus is shared with the board's firmware: while the firmware holds it, the kernel refuses a transfer
+# with "busy" (EBUSY, from the i2c-piix4 driver), or times it out. Nothing went out on the bus, and it's free again
+# within milliseconds, so that one transfer is simply tried again.
+TRANSIENT = (errno.EBUSY, errno.EAGAIN, errno.ETIMEDOUT)
+RETRY_FOR = 1.0  # seconds of busy bus before giving up
+
+
+def retry(call, *args, counter=None):
+    deadline, pause = time.monotonic() + RETRY_FOR, 0.001
+    while True:
+        try:
+            return call(*args)
+        except OSError as e:
+            if e.errno not in TRANSIENT or time.monotonic() > deadline:
+                raise
+            if counter is not None:
+                counter[0] += 1
+            time.sleep(pause)
+            pause = min(pause * 2, 0.02)
+
+
 # --- the link -----------------------------------------------------------------------------------------------------------
 
 class Link:
@@ -78,19 +101,22 @@ class Link:
         self.mode = mode
         self.recording = None  # a list while the controller is being set up: see replay()
         self.setup = []
+        self.retried = [0]  # transfers tried again because the bus was busy
 
     def _send(self, control, values):
         values = list(values)
         if self.mode == "i2c":
             for i in range(0, len(values), 4096):
-                self._smbus.i2c_rdwr(self._msg.write(self.address, [control] + values[i:i + 4096]))
+                retry(self._smbus.i2c_rdwr, self._msg.write(self.address, [control] + values[i:i + 4096]),
+                      counter=self.retried)
         elif self.mode == "block":
             for i in range(0, len(values), 32):
-                self._smbus.write_i2c_block_data(self.address, control, values[i:i + 32])
+                retry(self._smbus.write_i2c_block_data, self.address, control, values[i:i + 32],
+                      counter=self.retried)
         else:
             # the controllers keep parsing a multi-byte command across writes, as Adafruit's drivers rely on
             for value in values:
-                self._smbus.write_byte_data(self.address, control, value)
+                retry(self._smbus.write_byte_data, self.address, control, value, counter=self.retried)
 
     def command(self, *cmd):
         if self.recording is not None:
@@ -225,13 +251,13 @@ def probe(bus, address):
         return None
     try:
         try:
-            smbus.read_byte(address)
+            retry(smbus.read_byte, address)
             return "read"
         except OSError:
             pass
         if smbus.funcs & I2cFunc.SMBUS_QUICK:
             try:
-                smbus.write_quick(address)
+                retry(smbus.write_quick, address)
                 return "quick"
             except OSError:
                 pass
