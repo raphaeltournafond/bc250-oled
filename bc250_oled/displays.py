@@ -136,6 +136,15 @@ class Link:
     def data(self, data):
         self._send(0x40, data)
 
+    def status(self):
+        """The controller's status byte (bit 6: display off), or None if it doesn't answer reads."""
+        try:
+            return retry(self._smbus.read_byte, self.address, counter=self.retried)
+        except OSError as e:
+            if e.errno in TRANSIENT:
+                raise
+            return None
+
     def cleanup(self):
         self._smbus.close()
 
@@ -158,20 +167,49 @@ def open_device(driver, width, height, bus, address, rotate=0, mode="auto"):
 
 
 class Panel:
-    """Shows greyscale ("L") pictures on a device, sending only the part that changed.
+    """Shows greyscale ("L") pictures on a device, sending only the bytes that changed.
 
-    luma resends the whole frame every time; on the byte-at-a-time SMBus link that is most of a second of a busy bus
-    for each update. For the common controllers (SSD1306 family, SH1106) only the 8-pixel rows and columns that
-    changed are sent; others go through luma as a whole frame."""
+    The chipset SMBus is shared with the board's firmware and sends one byte per transfer: the less this program
+    uses it, the less it gets in the firmware's way (refused transfers, and collisions that can lock the bus until the
+    next power off). For the common controllers (SSD1306 family, SH1106), each 8-pixel row of the screen (a "page")
+    gets only its changed columns, in short runs; other controllers get whole frames through luma."""
 
     def __init__(self, device):
         from luma.oled.device import sh1106, ssd1305, ssd1306
         self.device = device
         self._kind = ("ssd1306" if isinstance(device, ssd1306) and not isinstance(device, ssd1305)
                       else "sh1106" if isinstance(device, sh1106) else None)
-        self._last = None  # what the display shows, in its own (unrotated) orientation
+        # moving to another spot costs commands: 6 bytes on SSD1306s (window), 3 on SH1106s (page and column)
+        self._gap = 6 if self._kind == "ssd1306" else 3
+        self._last = None  # what the display shows: one bytes object per page, or the frame for luma
         self._picture = None
+        self._status_works = False
+        self._unsure = 0
         self.sent = 0  # bytes of picture sent so far
+
+    def watch(self):
+        """Call with the display just set up and on: whether its status byte can tell when it was switched off."""
+        link = self.device._serial_interface
+        status = link.status() if isinstance(link, Link) else None
+        self._status_works = status is not None and not status & 0x40
+
+    def keepalive(self, contrast=None, every=6):
+        """Brings back a display that was unplugged and plugged in again (it comes back blank and off, and writes
+        still succeed). With a status byte, one read tells; without, it is set up again every `every` calls.
+        Returns True when it was set up again."""
+        link = self.device._serial_interface
+        if not isinstance(link, Link):
+            return False
+        if self._status_works:
+            status = link.status()
+            if status is not None and not status & 0x40:
+                return False
+        else:
+            self._unsure += 1
+            if self._unsure % every:
+                return False
+        self.wake(contrast)
+        return True
 
     def wake(self, contrast=None):
         """Sets the display up again and sends the whole picture: see Link.replay()."""
@@ -185,8 +223,8 @@ class Panel:
             self.show(self._picture, full=True)
 
     def show(self, picture, full=False):
+        from PIL import Image
         self._picture = picture
-        from PIL import Image, ImageChops
         if self.device.mode == "1":
             frame = picture.convert("1", dither=Image.Dither.NONE)
         else:
@@ -198,25 +236,32 @@ class Panel:
                 self._last = frame
             return
         native = self.device.preprocess(frame).convert("L")  # rotated the way the controller sees it
-        box = (0, 0) + native.size if full or self._last is None else ImageChops.difference(self._last, native).getbbox()
-        self._last = native
-        if not box:
-            return
-        x0, y0, x1, y1 = box
-        first, last = y0 // 8, (y1 - 1) // 8
-        pixels = native.load()
-        pages = [bytes(sum(1 << i for i in range(8) if pixels[x, page * 8 + i]) for x in range(x0, x1))
-                 for page in range(first, last + 1)]
+        width, pixels = native.width, native.load()
+        pages = [bytes(sum(1 << i for i in range(8) if pixels[x, page * 8 + i]) for x in range(width))
+                 for page in range(native.height // 8)]
+        old, self._last = self._last, pages
+        for page, data in enumerate(pages):
+            if full or old is None:
+                runs = [(0, width)]
+            else:
+                runs = []
+                for x in (x for x in range(width) if data[x] != old[page][x]):
+                    if runs and x - runs[-1][1] <= self._gap:
+                        runs[-1] = (runs[-1][0], x + 1)
+                    else:
+                        runs.append((x, x + 1))
+            for x0, x1 in runs:
+                self._send(page, x0, x1, data[x0:x1])
+
+    def _send(self, page, x0, x1, data):
         d = self.device
-        if self._kind == "ssd1306":  # horizontal addressing: one window, the bytes wrap from page to page
-            d.command(0x21, d._colstart + x0, d._colstart + x1 - 1, 0x22, first, last)
-            d.data(list(b"".join(pages)))
-        else:  # page addressing: each page starts at its own column
+        if self._kind == "ssd1306":
+            d.command(0x21, d._colstart + x0, d._colstart + x1 - 1, 0x22, page, page)
+        else:
             column = d._page_address_offset + x0
-            for page, data in zip(range(first, last + 1), pages):
-                d.command(0xB0 + page, column & 0x0F, 0x10 | column >> 4)
-                d.data(list(data))
-        self.sent += sum(len(p) for p in pages)
+            d.command(0xB0 + page, column & 0x0F, 0x10 | column >> 4)
+        d.data(list(data))
+        self.sent += len(data)
 
 
 # --- read-only search -----------------------------------------------------------------------------------------------------

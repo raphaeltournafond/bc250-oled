@@ -116,11 +116,19 @@ if [[ "$FAN" == 1 ]]; then
 fi
 
 # --- 5. find the display (no data sent) ------------------------------------------------------------------------------------
+# one program at a time on the display: the running service is stopped while looking (step 6 starts it again)
+WAS_RUNNING=0
+if systemctl --user is-active --quiet "$SERVICE" 2>/dev/null; then
+  WAS_RUNNING=1
+  systemctl --user stop "$SERVICE"
+fi
 say "Looking for the display (knocks at 0x3C and 0x3D on each bus, no data sent)"
 if ! run detect; then
   warn "No display found yet: see 'How to connect' in the README. The service keeps looking, so once it is wired"
   warn "it shows up by itself (or run: bash $SRC/setup.sh again)."
 fi
+
+[[ "$AUTOSTART" == 0 && "$WAS_RUNNING" == 1 ]] && systemctl --user start "$SERVICE"
 
 # --- 6. start at boot -------------------------------------------------------------------------------------------------------
 if [[ "$AUTOSTART" == 1 ]]; then

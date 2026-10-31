@@ -116,7 +116,7 @@ def fake_smbus2(controller, funcs, reads=True, busy_every=0):
             busy()
             if address != 0x3C or not reads:
                 raise OSError(121, "Remote I/O error")
-            return 0x43
+            return 0x03 if controller.on else 0x43  # SSD1306 status: bit 6 set while the display is off
 
         def write_quick(self, address):
             busy()
@@ -316,26 +316,59 @@ class Panel(Fixture):
 
     def test_a_replugged_display_comes_back(self):
         """Unplugged and plugged back between two updates: writes still succeed, so only setting it up again brings
-        it back, and that must not make a display that never lost power blink."""
+        it back. Displays with a status byte are checked with one read; that must not make a working display blink."""
+        for kind in ("ssd1306", "sh1106"):
+            for reads in (True, False):
+                with self.subTest(controller=kind, status_byte=reads):
+                    controller = self.use_bus(kind, I2cFunc.SMBUS_WRITE_BYTE_DATA, reads=reads)
+                    device = displays.open_device(kind, 128, 64, 1, 0x3C)
+                    device.persist = True
+                    panel = displays.Panel(device)
+                    panel.watch()
+                    self.assertEqual(panel._status_works, reads)
+                    frames = list(self.frames(128, 64, 3))
+                    panel.show(frames[0])
+                    writes = controller.writes
+                    calls = 6 if not reads else 1
+                    woke = [panel.keepalive() for _ in range(calls)]
+                    self.assertEqual(woke, [False] * calls if reads else [False] * 5 + [True])
+                    if reads:
+                        self.assertEqual(controller.writes, writes, "checking a working display wrote to it")
+                    self.assertEqual(controller.turned_off, 1, "the check turned a working display off")
+                    controller.power_cycle()
+                    panel.show(frames[1])  # only the changes: still dark
+                    self.assertFalse(controller.on)
+                    woke = [panel.keepalive(contrast=40) for _ in range(calls)]
+                    self.assertTrue(woke[-1])
+                    self.assertTrue(controller.on)
+                    self.assertEqual(controller.turned_off, 0)
+                    first_column = device._colstart if kind == "ssd1306" else device._page_address_offset
+                    got = controller.picture(128, 64, first_column).tobytes()
+                    self.assertEqual(got, frames[1].point(lambda v: 255 * (v >= 128)).tobytes())
+
+    def test_little_traffic_on_the_shared_bus(self):
+        """The SMBus is shared with the board's firmware: a stats update must take few transfers, not a whole frame
+        (changes in opposite corners used to be merged into one rectangle: ~925 transfers a second)."""
         for kind in ("ssd1306", "sh1106"):
             with self.subTest(controller=kind):
                 controller = self.use_bus(kind, I2cFunc.SMBUS_WRITE_BYTE_DATA)
                 device = displays.open_device(kind, 128, 64, 1, 0x3C)
                 device.persist = True
                 panel = displays.Panel(device)
-                frames = list(self.frames(128, 64, 3))
-                panel.show(frames[0])
-                panel.wake()
-                self.assertEqual(controller.turned_off, 1, "waking a working display turned it off")
-                controller.power_cycle()
-                panel.show(frames[1])  # only the changes: still dark
-                self.assertFalse(controller.on)
-                panel.wake(contrast=40)
-                self.assertTrue(controller.on)
-                self.assertEqual(controller.turned_off, 0)
-                first_column = device._colstart if kind == "ssd1306" else device._page_address_offset
-                got = controller.picture(128, 64, first_column).tobytes()
-                self.assertEqual(got, frames[1].point(lambda v: 255 * (v >= 128)).tobytes())
+                s = screens.Screens(128, 64)
+                rng, stats = random.Random(1), SAMPLE
+                panel.show(s.render(stats))
+                controller.writes = 0
+                for _ in range(30):  # half a minute of realistic drift
+                    stats = Stats(**{**stats.__dict__,
+                                     "cpu_load": max(0, min(100, stats.cpu_load + rng.uniform(-8, 8))),
+                                     "gpu_load": max(0, min(100, stats.gpu_load + rng.uniform(-8, 8))),
+                                     "cpu_temp": stats.cpu_temp + rng.choice([0, 0, 1, -1]),
+                                     "cpu_ghz": rng.uniform(2.8, 3.5), "gpu_mhz": rng.choice([1500, 1873, 2000]),
+                                     "gpu_watts": rng.uniform(90, 160)})
+                    s.record(stats)
+                    panel.show(s.render(stats))
+                self.assertLess(controller.writes / 30, 200, "transfers a second")
 
     def test_a_busy_bus(self):
         """The firmware takes the SMBus now and then: those transfers are tried again, and the picture stays exact."""
@@ -378,6 +411,20 @@ class Panel(Fixture):
             panel.show(picture)
         panel.show(picture)  # unchanged: nothing sent
         self.assertEqual(panel.sent, 3 * 128 * 128 * 3)
+
+
+class OneAtATime(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "file locks are for Linux (previews and tests only on Windows)")
+    def test_a_second_program_is_refused(self):
+        from bc250_oled.__main__ import InUse, claim_display, main
+        first = claim_display()
+        try:
+            with self.assertRaises(InUse):
+                claim_display()
+            self.assertEqual(main(["detect"]), 1)  # says to stop the service, probes nothing
+        finally:
+            first.close()
+        claim_display().close()
 
 
 class Detect(Fixture):

@@ -2,8 +2,10 @@
 import argparse
 import datetime
 import math
+import os
 import signal
 import sys
+import tempfile
 import threading
 import time
 
@@ -17,6 +19,27 @@ SHIFTS = ((0, 0), (1, 0), (1, 1), (0, 1))  # burn-in care: the picture moves by 
 
 def log(*args):
     print(*args, flush=True)
+
+
+class InUse(OSError):
+    pass
+
+
+def claim_display():
+    """Only one program at a time may talk to the display: two (the service and a detect, or the service started
+    twice) mix their transfers on a bus the firmware also uses. Returns the lock to keep; raises InUse if taken."""
+    try:
+        import fcntl
+    except ImportError:  # Windows: previews and tests only
+        return None
+    lock = open(os.path.join(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir(), "bc250-oled.lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock.close()
+        raise InUse("the display is in use by another bc250-oled, most likely the service: stop it first with "
+                    "'systemctl --user stop bc250-oled' (start it again with 'systemctl --user start bc250-oled')")
+    return lock
 
 
 def display_options(parser):
@@ -85,6 +108,11 @@ def cmd_run(args):
     screens = make_screens(args, driver, width, height)
     night = parse_night(args.night)
     sensors = Sensors()
+    try:
+        lock = claim_display()
+    except InUse as e:
+        log(f"error: {e}")
+        return 1
     running = [True]
     if threading.current_thread() is threading.main_thread():  # signals only reach the main thread (tests aren't)
         signal.signal(signal.SIGTERM, lambda *_: running.__setitem__(0, False))
@@ -95,11 +123,15 @@ def cmd_run(args):
             if device is None:
                 bus, address = locate(args)
                 device = open_device(driver, width, height, bus, address, args.rotate, args.link)
+                device.persist = True  # at exit: just turned off (below), not cleared with a whole frame of writes
                 panel = Panel(device)
                 if args.contrast is not None:
                     device.contrast(args.contrast)
+                panel.watch()
                 log(f"{driver} {width}x{height} on I2C bus {bus} at 0x{address:02X} "
-                    f"({device._serial_interface.mode} writes)" + (f", back after {failures} tries" if failures else ""))
+                    f"({device._serial_interface.mode} writes, "
+                    f"{'status byte' if panel._status_works else 'no status byte'})"
+                    + (f", back after {failures} tries" if failures else ""))
                 if failures == 0 and not args.no_splash:
                     panel.show(screens.splash(), full=True)
                     time.sleep(2)
@@ -126,10 +158,10 @@ def cmd_run(args):
                         shifted.paste(picture, (dx, dy))
                         picture = shifted
                 panel.show(picture)
-                # a display unplugged and plugged back comes back blank and off, and writes to it still succeed:
-                # now and then, set it up again and send the whole picture (also clears any glitch from the bus)
+                # a display unplugged and plugged back comes back blank and off, and writes to it still succeed
                 if args.keepalive and time.monotonic() - last_wake >= args.keepalive:
-                    panel.wake(args.contrast)
+                    if panel.keepalive(args.contrast) and panel._status_works:
+                        log("the display was off (unplugged?): set up again")
                     last_wake = time.monotonic()
             retried = device._serial_interface.retried[0]
             if retried != reported and time.monotonic() - last_report >= 600:
@@ -143,7 +175,6 @@ def cmd_run(args):
             if failures <= 3 or failures % 12 == 0:
                 log(f"display not reachable ({e}); trying again in 5 s (attempt {failures})")
             if device is not None:
-                device.persist = True  # luma would otherwise try to clear it at exit, through the closed bus
                 try:
                     device._serial_interface.cleanup()
                 except OSError:
@@ -151,11 +182,26 @@ def cmd_run(args):
             device = None
             time.sleep(5)
     if device is not None:
-        device.hide()  # turned off rather than left frozen on the last values
+        try:
+            device.hide()  # turned off rather than left frozen on the last values
+        except OSError:
+            pass
+    if lock:
+        lock.close()
+    return 0
 
 
 def cmd_detect(args):
     """Lists the I2C buses and what answers at the display addresses (0x3C/0x3D), sending no data."""
+    lock = claim_display()  # raises InUse, reported by main
+    try:
+        return find_displays()
+    finally:
+        if lock:
+            lock.close()
+
+
+def find_displays():
     found_any = False
     listed = buses()
     if not listed:
@@ -186,8 +232,17 @@ def cmd_detect(args):
 
 def cmd_test(args):
     """Step by step on the real display, timing each step: for wiring and driver trouble."""
-    from PIL import Image, ImageDraw
     driver, width, height = resolve(args.preset, args.driver, args.size)
+    lock = claim_display()
+    try:
+        return test_display(args, driver, width, height)
+    finally:
+        if lock:
+            lock.close()
+
+
+def test_display(args, driver, width, height):
+    from PIL import Image, ImageDraw
     bus, address = locate(args)
     log(f"Display: {driver} {width}x{height}, I2C bus {bus}, address 0x{address:02X}")
     t = time.monotonic()
@@ -196,6 +251,8 @@ def cmd_test(args):
     link = device._serial_interface
     log(f"  set up in {time.monotonic() - t:.2f} s ({link.mode} writes, {sum(map(len, link.setup))} command bytes)")
     panel = Panel(device)
+    panel.watch()
+    log(f"  status byte: {'yes, a replugged display is noticed with one read' if panel._status_works else 'no, the display is set up again every minute instead'}")
     steps = [("all white", Image.new("L", device.size, 255)), ("frame and cross", Image.new("L", device.size))]
     draw = ImageDraw.Draw(steps[1][1])
     draw.rectangle((0, 0, width - 1, height - 1), outline=255)
@@ -210,8 +267,8 @@ def cmd_test(args):
         time.sleep(3)
     log("  unplug and plug the display back within the next 10 s...")
     time.sleep(10)
-    panel.wake(None)
-    log("  woken up again: the stats should be back. Turning it off in 5 s.")
+    woke = panel.keepalive(every=1)
+    log(f"  {'set up again' if woke else 'still on, nothing to do'}: the stats should be there. Turning it off in 5 s.")
     time.sleep(5)
     device.hide()
     link.cleanup()
@@ -291,7 +348,7 @@ def main(argv=None):
     run.add_argument("--no-shift", action="store_true", help="don't move the picture by a pixel now and then")
     run.add_argument("--no-splash", action="store_true")
     run.add_argument("--keepalive", type=float, default=10,
-                     help="seconds between setting the display up again, which brings it back after it was "
+                     help="seconds between checks that the display is still on, which bring it back after it was "
                           "unplugged (10; 0: never)")
     run.add_argument("--frames", type=int, help=argparse.SUPPRESS)  # tests: stop after this many updates
     run.set_defaults(func=cmd_run)
