@@ -53,10 +53,12 @@ def locate(args):
             if probe(args.bus, address):
                 return args.bus, address
         return args.bus, ADDRESSES[0]
-    found = [(b, a) for b, a, _ in find() if args.address in (None, a)]
+    found, denied = find()
+    found = [(b, a) for b, a, _ in found if args.address in (None, a)]
     if not found:
-        raise OSError("no display answers at 0x3C/0x3D on any I2C bus (is it wired and powered? "
-                      "try: python -m bc250_oled detect)")
+        raise OSError("no display answers at 0x3C/0x3D on any I2C bus"
+                      + (f" this account may open (no access to i2c-{', i2c-'.join(map(str, denied))}: run setup.sh)"
+                         if denied else " (is it wired and powered? try: python -m bc250_oled detect)"))
     return found[0]
 
 
@@ -99,7 +101,7 @@ def cmd_run(args):
                 if failures == 0 and not args.no_splash:
                     panel.show(screens.splash(), full=True)
                     time.sleep(2)
-                failures, hidden, started, last_full = 0, False, time.monotonic(), time.monotonic()
+                failures, hidden, started, last_wake = 0, False, time.monotonic(), time.monotonic()
             stats = sensors.read()
             screens.record(stats)
             now = datetime.datetime.now()
@@ -120,11 +122,12 @@ def cmd_run(args):
                         shifted = Image.new("L", picture.size)
                         shifted.paste(picture, (dx, dy))
                         picture = shifted
-                # now and then everything, in case a glitch on the bus left stray pixels
-                full = time.monotonic() - last_full > 300
-                panel.show(picture, full=full)
-                if full:
-                    last_full = time.monotonic()
+                panel.show(picture)
+                # a display unplugged and plugged back comes back blank and off, and writes to it still succeed:
+                # now and then, set it up again and send the whole picture (also clears any glitch from the bus)
+                if args.keepalive and time.monotonic() - last_wake >= args.keepalive:
+                    panel.wake(args.contrast)
+                    last_wake = time.monotonic()
             frames += 1
             time.sleep(max(0.05, args.interval - time.monotonic() % args.interval))
         except OSError as e:
@@ -144,31 +147,65 @@ def cmd_run(args):
 
 
 def cmd_detect(args):
-    """Read-only: lists the I2C buses and what answers at the display addresses (0x3C/0x3D), nothing else."""
+    """Lists the I2C buses and what answers at the display addresses (0x3C/0x3D), sending no data."""
     found_any = False
     listed = buses()
     if not listed:
         log("No I2C buses: load the driver with  sudo modprobe i2c-dev  (setup.sh makes it permanent).")
         return 1
     for number, name in listed:
-        answers = {a: probe(number, a) for a in ADDRESSES}
-        if None in answers.values():
-            status = "no access (run setup.sh, or try with sudo)"
-        else:
-            status = ", ".join(f"display at 0x{a:02X}" for a, ok in answers.items() if ok) or "-"
+        try:
+            answers = {a: probe(number, a) for a in ADDRESSES}
+        except PermissionError:
+            log(f"  i2c-{number:<3} {name[:48]:<48} no access (run setup.sh, or try with sudo)")
+            continue
+        status = ", ".join(f"display at 0x{a:02X} (answers {how})" for a, how in answers.items() if how) or "-"
         if any(answers.values()):
             found_any = True
             try:
-                link = Link(number, next(a for a, ok in answers.items() if ok))
-                status += f" ({link.mode} writes)"
+                link = Link(number, next(a for a, how in answers.items() if how))
+                status += f", {link.mode} writes"
                 link.cleanup()
             except OSError as e:
-                status += f" (but can't write: {e})"
+                status += f", but can't write: {e}"
         log(f"  i2c-{number:<3} {name[:48]:<48} {status}")
     if not found_any:
         log("No display found. Check the wiring (README, 'How to connect') and that the board is on: the header's "
             "3.3 V pin only has power while the BC-250 runs.")
         return 1
+    return 0
+
+
+def cmd_test(args):
+    """Step by step on the real display, timing each step: for wiring and driver trouble."""
+    from PIL import Image, ImageDraw
+    driver, width, height = resolve(args.preset, args.driver, args.size)
+    bus, address = locate(args)
+    log(f"Display: {driver} {width}x{height}, I2C bus {bus}, address 0x{address:02X}")
+    t = time.monotonic()
+    device = open_device(driver, width, height, bus, address, args.rotate, args.link)
+    device.persist = True
+    link = device._serial_interface
+    log(f"  set up in {time.monotonic() - t:.2f} s ({link.mode} writes, {sum(map(len, link.setup))} command bytes)")
+    panel = Panel(device)
+    steps = [("all white", Image.new("L", device.size, 255)), ("frame and cross", Image.new("L", device.size))]
+    draw = ImageDraw.Draw(steps[1][1])
+    draw.rectangle((0, 0, width - 1, height - 1), outline=255)
+    draw.line((0, 0, width - 1, height - 1), fill=255)
+    draw.line((0, height - 1, width - 1, 0), fill=255)
+    steps.append(("stats", make_screens(args, driver, width, height).render(SAMPLE)))
+    for name, picture in steps:
+        t = time.monotonic()
+        panel.show(picture, full=True)
+        log(f"  {name}: {time.monotonic() - t:.2f} s for a full picture. Shown? (next in 3 s)")
+        time.sleep(3)
+    log("  unplug and plug the display back within the next 10 s...")
+    time.sleep(10)
+    panel.wake(None)
+    log("  woken up again: the stats should be back. Turning it off in 5 s.")
+    time.sleep(5)
+    device.hide()
+    link.cleanup()
     return 0
 
 
@@ -244,11 +281,19 @@ def main(argv=None):
     run.add_argument("--page-seconds", type=float, default=6, help="seconds per screen when several (6)")
     run.add_argument("--no-shift", action="store_true", help="don't move the picture by a pixel now and then")
     run.add_argument("--no-splash", action="store_true")
+    run.add_argument("--keepalive", type=float, default=10,
+                     help="seconds between setting the display up again, which brings it back after it was "
+                          "unplugged (10; 0: never)")
     run.add_argument("--frames", type=int, help=argparse.SUPPRESS)  # tests: stop after this many updates
     run.set_defaults(func=cmd_run)
 
-    detect = commands.add_parser("detect", help="find the display (read-only)")
+    detect = commands.add_parser("detect", help="find the display (sends no data)")
     detect.set_defaults(func=cmd_detect)
+
+    test = commands.add_parser("test", help="test patterns and timings on the display, for wiring trouble")
+    display_options(test)
+    link_options(test)
+    test.set_defaults(func=cmd_test)
 
     preview = commands.add_parser("preview", help="save a picture of the screens (no display needed)")
     display_options(preview)
@@ -270,6 +315,9 @@ def main(argv=None):
         return args.func(args) or 0
     except KeyboardInterrupt:
         return 0
+    except OSError as e:  # detect and test: no display, no access...
+        log(f"error: {e}")
+        return 1
     except ValueError as e:
         parser.error(str(e))
 

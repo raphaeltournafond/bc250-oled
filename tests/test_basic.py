@@ -32,6 +32,14 @@ class Controller:
         self.col_range, self.page_range = (0, 127), (0, 7)
         self.col, self.page = 0, 0
         self.writes = 0
+        self.on = False
+        self.turned_off = 0  # "display off" commands received
+
+    def power_cycle(self):
+        """Unplugged and plugged back: picture memory full of noise, settings lost, display off."""
+        rng = random.Random(7)
+        self.__init__(self.kind)
+        self.ram = [[rng.randrange(256) for _ in range(132)] for _ in range(16)]
 
     def feed(self, control, values):
         self.writes += 1
@@ -50,6 +58,9 @@ class Controller:
             return
         if v in self.ARGS or (v == 0x20 and self.kind == "ssd1306"):
             self.pending = v
+        elif v in (0xAE, 0xAF):
+            self.on = v == 0xAF
+            self.turned_off += v == 0xAE
         elif self.kind == "sh1106" and 0xB0 <= v <= 0xBF:
             self.page = v - 0xB0
         elif self.kind == "sh1106" and v < 0x10:
@@ -79,19 +90,25 @@ class Controller:
 
 class I2cFunc(enum.IntFlag):
     I2C = 0x1
+    SMBUS_QUICK = 0x00010000
     SMBUS_WRITE_BYTE_DATA = 0x00100000
     SMBUS_WRITE_I2C_BLOCK = 0x08000000
 
 
-def fake_smbus2(controller, funcs):
+def fake_smbus2(controller, funcs, reads=True):
+    """A bus with the display at 0x3C; reads=False: one that only answers writes, as many modules do."""
     class SMBus:
         def __init__(self, bus):
             self.funcs = funcs
 
         def read_byte(self, address):
-            if address != 0x3C:
+            if address != 0x3C or not reads:
                 raise OSError(121, "Remote I/O error")
             return 0x43
+
+        def write_quick(self, address):
+            if address != 0x3C:
+                raise OSError(121, "Remote I/O error")
 
         def write_byte_data(self, address, register, value):
             controller.feed(register, [value])
@@ -123,9 +140,9 @@ class Fixture(unittest.TestCase):
         else:
             sys.modules["smbus2"] = self._smbus2
 
-    def use_bus(self, kind, funcs):
+    def use_bus(self, kind, funcs, reads=True):
         controller = Controller(kind)
-        sys.modules["smbus2"] = fake_smbus2(controller, funcs)
+        sys.modules["smbus2"] = fake_smbus2(controller, funcs, reads)
         return controller
 
 
@@ -278,6 +295,29 @@ class Panel(Fixture):
                 with self.subTest(link=mode, controller=kind):
                     self.assertEqual(self.check(kind, kind, 128, 64, funcs), mode)
 
+    def test_a_replugged_display_comes_back(self):
+        """Unplugged and plugged back between two updates: writes still succeed, so only setting it up again brings
+        it back, and that must not make a display that never lost power blink."""
+        for kind in ("ssd1306", "sh1106"):
+            with self.subTest(controller=kind):
+                controller = self.use_bus(kind, I2cFunc.SMBUS_WRITE_BYTE_DATA)
+                device = displays.open_device(kind, 128, 64, 1, 0x3C)
+                device.persist = True
+                panel = displays.Panel(device)
+                frames = list(self.frames(128, 64, 3))
+                panel.show(frames[0])
+                panel.wake()
+                self.assertEqual(controller.turned_off, 1, "waking a working display turned it off")
+                controller.power_cycle()
+                panel.show(frames[1])  # only the changes: still dark
+                self.assertFalse(controller.on)
+                panel.wake(contrast=40)
+                self.assertTrue(controller.on)
+                self.assertEqual(controller.turned_off, 0)
+                first_column = device._colstart if kind == "ssd1306" else device._page_address_offset
+                got = controller.picture(128, 64, first_column).tobytes()
+                self.assertEqual(got, frames[1].point(lambda v: 255 * (v >= 128)).tobytes())
+
     def test_no_usable_write(self):
         self.use_bus("ssd1306", I2cFunc(0))
         with self.assertRaises(OSError):
@@ -291,6 +331,21 @@ class Panel(Fixture):
             panel.show(picture)
         panel.show(picture)  # unchanged: nothing sent
         self.assertEqual(panel.sent, 3 * 128 * 128 * 3)
+
+
+class Detect(Fixture):
+    def test_modules_that_ignore_reads_are_found(self):
+        old = displays.buses
+        displays.buses = lambda: [(0, "AMDGPU DM i2c hw bus 0"), (3, "SMBus PIIX4 adapter port 0 at 0b00")]
+        try:
+            for reads, how in ((True, "read"), (False, "quick")):
+                self.use_bus("ssd1306", I2cFunc.SMBUS_QUICK | I2cFunc.SMBUS_WRITE_BYTE_DATA, reads)
+                self.assertEqual(displays.probe(3, 0x3C), how)
+                self.assertIsNone(displays.probe(3, 0x3D))
+            self.use_bus("ssd1306", I2cFunc.SMBUS_WRITE_BYTE_DATA, reads=False)  # no quick write either
+            self.assertIsNone(displays.probe(3, 0x3C))
+        finally:
+            displays.buses = old
 
 
 class Run(Fixture):

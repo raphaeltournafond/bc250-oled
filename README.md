@@ -100,7 +100,7 @@ bash setup.sh
 The installer looks for the display and lists every I2C bus, for example:
 
 ```
-  i2c-1   SMBus PIIX4 adapter port 0 at 0b00            display at 0x3C (byte writes)
+  i2c-1   SMBus PIIX4 adapter port 0 at 0b00            display at 0x3C (answers quick), byte writes
   i2c-2   SMBus PIIX4 adapter port 2 at 0b00            -
   i2c-3   AMDGPU DM i2c hw bus 0                         -
 ```
@@ -111,9 +111,10 @@ You can run that check on its own at any time:
 .venv/bin/python -m bc250_oled detect
 ```
 
-**Read-only:** the check only *reads* one byte at `0x3C` and `0x3D`, the two display addresses. The program never
-writes to any other address. Some modules have the address printed as `0x78`/`0x7A`: those are the same two addresses,
-written the 8-bit way.
+**No data sent:** the check only knocks at `0x3C` and `0x3D`, the two display addresses. It tries a one-byte read
+first. Many modules ignore reads, so it then sends the address alone with no data (an SMBus "quick write", what
+`i2cdetect` does at these addresses). The program never writes to any other address. Some modules have the address
+printed as `0x78`/`0x7A`: those are the same two addresses, written the 8-bit way.
 
 The display isn't found?
 
@@ -121,6 +122,25 @@ The display isn't found?
 - SCL and SDA swapped is the most common mistake. Swapping them back is harmless.
 - Some modules have a solder jumper for the address; both addresses are searched.
 - The display only gets power while the board runs. 3V is not the standby rail.
+
+Found, but the screen stays dark? Stop the service and run the step-by-step test. It shows an all-white screen, a
+frame with a cross, then the stats, timing each one, and asks you to unplug and replug the display to check it comes
+back:
+
+```bash
+systemctl --user stop bc250-oled
+.venv/bin/python -m bc250_oled test          # add your --preset / --driver if not a 0.96"
+systemctl --user start bc250-oled
+```
+
+- All white works but nothing else does: send the output in an issue.
+- Nothing at all, though the test runs without errors: the module may use another controller. Try `--preset 1.3`
+  (SH1106).
+- A picture shifted by 2 pixels with noise on one edge: wrong driver, try the other one.
+
+**Unplugged and plugged back?** The display comes back blank, and writes to it still succeed, so the program can't
+tell it happened. Every 10 seconds it sets the display up again and resends the picture (`--keepalive`), so it
+recovers by itself within 10 seconds. Waking a display that never lost power doesn't make it blink.
 
 **Byte writes:** the chipset SMBus can only send a byte at a time, so a full 128x64 picture takes a good part of a
 second. To keep up, the program sends only the bytes that changed since the last picture, usually a few digits. On a
@@ -170,6 +190,7 @@ bash setup.sh --preset 1.3 --rotate 180 --night 23:00-07:30
 | `--alert °C` | 90 | a temperature at or above this shows inverted |
 | `--bus N`, `--address 0x3C` | auto | skip the search |
 | `--no-shift` | | the picture moves by one pixel every 3 minutes against burn-in; this turns it off |
+| `--keepalive S` | 10 | seconds between setting the display up again, so it recovers after being replugged; 0 turns it off |
 | `--fan` | | (setup only) loads the Super I/O sensor driver for fan RPM and VRM temperature |
 
 Commands:

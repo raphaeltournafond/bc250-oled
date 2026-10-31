@@ -1,8 +1,9 @@
-"""The displays this works with, the I2C link to them, and a read-only search for one.
+"""The displays this works with, the I2C link to them, and a search for one that sends no data.
 
 Safety: the BC-250's SMBus also reaches chips that matter (Super I/O, power controllers on some buses). Nothing here
-writes anywhere but the display's own address, and detection only *reads* one byte at 0x3C and 0x3D, the two
-addresses every SSD1306/SH1106-class module uses."""
+writes anywhere but the display's own address, and detection only knocks at 0x3C and 0x3D, the two addresses every
+SSD1306/SH1106-class module uses: a one-byte read, or, for the many modules that ignore reads, the address alone with
+no data (an SMBus "quick write", what i2cdetect does at these addresses)."""
 import glob
 import os
 from dataclasses import dataclass
@@ -75,6 +76,8 @@ class Link:
         elif mode not in available:
             raise OSError(f"I2C bus {bus} can't do '{mode}' writes (it can: {', '.join(available) or 'none'})")
         self.mode = mode
+        self.recording = None  # a list while the controller is being set up: see replay()
+        self.setup = []
 
     def _send(self, control, values):
         values = list(values)
@@ -90,7 +93,19 @@ class Link:
                 self._smbus.write_byte_data(self.address, control, value)
 
     def command(self, *cmd):
+        if self.recording is not None:
+            self.recording.append(cmd)
         self._send(0x00, cmd)
+
+    def replay(self):
+        """Sends the setup commands again, which wakes a display that was unplugged and plugged back (it comes back
+        blank and off, while writes still succeed). Leaves out the "display off" that starts the setup, so a display
+        that never lost power doesn't blink."""
+        for i, cmd in enumerate(self.setup):
+            if i == 0 and cmd and cmd[0] == 0xAE:
+                cmd = cmd[1:]
+            if cmd:
+                self._send(0x00, cmd)
 
     def data(self, data):
         self._send(0x40, data)
@@ -105,7 +120,12 @@ def open_device(driver, width, height, bus, address, rotate=0, mode="auto"):
     from luma.core.interface.serial import noop
     serial = noop() if bus is None else Link(bus, address, mode)
     try:
-        return getattr(devices, driver)(serial, width=width, height=height, rotate=rotate // 90 % 4)
+        if bus is not None:
+            serial.recording = serial.setup
+        device = getattr(devices, driver)(serial, width=width, height=height, rotate=rotate // 90 % 4)
+        if bus is not None:
+            serial.recording = None
+        return device
     except Exception:
         serial.cleanup()
         raise
@@ -124,9 +144,22 @@ class Panel:
         self._kind = ("ssd1306" if isinstance(device, ssd1306) and not isinstance(device, ssd1305)
                       else "sh1106" if isinstance(device, sh1106) else None)
         self._last = None  # what the display shows, in its own (unrotated) orientation
+        self._picture = None
         self.sent = 0  # bytes of picture sent so far
 
+    def wake(self, contrast=None):
+        """Sets the display up again and sends the whole picture: see Link.replay()."""
+        link = self.device._serial_interface
+        if isinstance(link, Link):
+            link.replay()
+            if contrast is not None:
+                self.device.contrast(contrast)
+            self.device.show()
+        if self._picture is not None:
+            self.show(self._picture, full=True)
+
     def show(self, picture, full=False):
+        self._picture = picture
         from PIL import Image, ImageChops
         if self.device.mode == "1":
             frame = picture.convert("1", dither=Image.Dither.NONE)
@@ -181,22 +214,42 @@ def buses():
 
 
 def probe(bus, address):
-    """True if something answers a one-byte read at `address` (a display answers with its status byte), False if
-    nothing does, None if the bus can't be opened (permissions: run with sudo once, or run setup.sh)."""
-    from smbus2 import SMBus
+    """How something at `address` answered: "read" (a one-byte read: SSD1306s give their status byte), "quick" (only
+    the address, no data), None if nothing did. Raises PermissionError if the bus can't be opened (run setup.sh)."""
+    from smbus2 import I2cFunc, SMBus
     try:
         smbus = SMBus(bus)
+    except PermissionError:
+        raise
     except OSError:
         return None
     try:
-        smbus.read_byte(address)
-        return True
-    except OSError:
-        return False
+        try:
+            smbus.read_byte(address)
+            return "read"
+        except OSError:
+            pass
+        if smbus.funcs & I2cFunc.SMBUS_QUICK:
+            try:
+                smbus.write_quick(address)
+                return "quick"
+            except OSError:
+                pass
+        return None
     finally:
         smbus.close()
 
 
 def find():
-    """[(bus, address, adapter name)] of everything answering at a display address."""
-    return [(number, address, name) for number, name in buses() for address in ADDRESSES if probe(number, address)]
+    """[(bus, address, adapter name)] of everything answering at a display address, and the buses that couldn't be
+    opened."""
+    found, denied = [], []
+    for number, name in buses():
+        for address in ADDRESSES:
+            try:
+                if probe(number, address):
+                    found.append((number, address, name))
+            except PermissionError:
+                denied.append(number)
+                break
+    return found, denied

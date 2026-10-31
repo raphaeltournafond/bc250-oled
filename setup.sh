@@ -115,8 +115,8 @@ if [[ "$FAN" == 1 ]]; then
   fi
 fi
 
-# --- 5. find the display (read-only) ---------------------------------------------------------------------------------------
-say "Looking for the display (read-only: one byte read at 0x3C and 0x3D on each bus)"
+# --- 5. find the display (no data sent) ------------------------------------------------------------------------------------
+say "Looking for the display (knocks at 0x3C and 0x3D on each bus, no data sent)"
 if ! run detect; then
   warn "No display found yet: see 'How to connect' in the README. The service keeps looking, so once it is wired"
   warn "it shows up by itself (or run: bash $SRC/setup.sh again)."
