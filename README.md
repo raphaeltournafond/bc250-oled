@@ -172,9 +172,23 @@ systemctl --user start bc250-oled
   (SH1106).
 - A picture shifted by 2 pixels with noise on one edge: wrong driver, try the other one.
 
-**Unplugged and plugged back?** The display comes back blank, and writes to it still succeed, so the program can't
-tell it happened. Every 10 seconds it sets the display up again and resends the picture (`--keepalive`), so it
-recovers by itself within 10 seconds. Waking a display that never lost power doesn't make it blink.
+**Unplugged and plugged back?** The display comes back blank and switched off, and writes to it still succeed.
+Every 10 seconds (`--keepalive`) the program reads the display's status byte, which says whether it is on. If it
+was switched off, the program sets it up again and resends the picture. Modules without a status byte are set up
+again once a minute instead. The log line at start says which kind you have.
+
+**It worked, then the display can't be found any more, even after restarting the service?** The SMBus may be
+locked: it is shared with the board's firmware, and a collision between the two can leave it stuck until the power
+goes off. Shut the BC-250 down completely, then power it on (a reboot may not cut the display's power). The kernel
+log says so when it happens:
+
+```bash
+sudo dmesg | grep -iE "smbus|piix4"
+```
+
+To keep the bus as free as possible, the program sends only the bytes that changed (about 150 one-byte transfers a
+second for a 128x64 stats screen), and only one copy of it may use the display at a time. `setup.sh` stops the
+service while it looks for the display, and `detect` and `test` refuse to run while the service is running.
 
 **Byte writes:** the chipset SMBus can only send a byte at a time, so a full 128x64 picture takes a good part of a
 second. To keep up, the program sends only the bytes that changed since the last picture, usually a few digits. On a
@@ -224,7 +238,7 @@ bash setup.sh --preset 1.3 --rotate 180 --night 23:00-07:30
 | `--alert °C` | 90 | a temperature at or above this shows inverted |
 | `--bus N`, `--address 0x3C` | auto | skip the search |
 | `--no-shift` | | the picture moves by one pixel every 3 minutes against burn-in; this turns it off |
-| `--keepalive S` | 10 | seconds between setting the display up again, so it recovers after being replugged; 0 turns it off |
+| `--keepalive S` | 10 | seconds between checks that the display is still on, so it recovers after being replugged; 0 turns them off |
 | `--fan` | | (setup only) loads the Super I/O sensor driver for fan RPM and VRM temperature |
 
 Commands:
