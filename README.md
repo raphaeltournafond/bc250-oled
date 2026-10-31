@@ -99,14 +99,24 @@ headers). It carries the board's main SMBus and a 3.3 V supply that's on while t
 | SCL | 4 | SMB_CLK_MAIN |
 | SDA | 6 | SMB_DATA_MAIN |
 
-```
-TPMS1 (2.0 mm pitch), pin numbers as on the board's documentation; find pin 1 on yours first
+TPMS1 is 2x9 pins, 2.0 mm pitch. Pin 1 is marked by a white triangle in the silkscreen; pin 13 is blank in the
+docs (likely a missing pin, as a key). Layout from [elektricM's BC-250 docs](https://elektricm.github.io/amd-bc250-docs/hardware/pinouts/#tpms1-lpc-header),
+with the four display pins marked:
 
-        odd pins   1   3   5   7   9  11  13  15  17
-                               [VCC]
-        even pins  2   4   6   8  10  12  14  16  18
-                 [GND][SCL][SDA]
 ```
+                  PCICLK -- [  1   2 ] -- GND            <-- display GND
+                   FRAME -- [  3   4 ] -- SMB_CLK_MAIN   <-- display SCL
+                 PCIRST# -- [  5   6 ] -- SMB_DATA_MAIN  <-- display SDA
+                    LAD3 -- [  7   8 ] -- LAD2
+display VCC -->       3V -- [  9  10 ] -- LAD1
+                    LAD0 -- [ 11  12 ] -- GND
+                            [     14 ] -- S_PWRDWN#
+                    3VSB -- [ 15  16 ] -- SERIRQ#
+                     GND -- [ 17  18 ] -- GND
+```
+
+Leave the other pins alone: they're the LPC bus (PCICLK, FRAME, LAD0-3...). 3VSB (pin 15) is the standby supply,
+on even while the board is off: the display would stay powered (and its pixels wearing) with the BC-250 shut down.
 
 > [!WARNING]
 > - **3.3 V only.** Never take VCC from a 5 V pin. The display module has pull-up resistors from SCL and SDA to its
@@ -116,8 +126,8 @@ TPMS1 (2.0 mm pitch), pin numbers as on the board's documentation; find pin 1 on
 
 ### Check with the multimeter (board on, display not connected)
 
-1. Find pin 1: a square pad, a triangle or a "1" in the silkscreen next to the header. Pins are numbered in pairs:
-   1 and 2 face each other, then 3 and 4, and so on.
+1. Find pin 1: the white triangle in the silkscreen next to the header. Pins are numbered in pairs: 1 and 2 face
+   each other, then 3 and 4, and so on. If pin 13 is missing on yours, that gap confirms the orientation.
 2. Black probe on a ground (a metal screw hole, or the PSU connector's black wire).
 3. Pin 2: 0 V. Pin 9: **3.3 V**.
 4. Pins 4 and 6 (SCL and SDA) idle high: about **3.3 V** as well. If anything reads 5 V, stop and check the pin
@@ -299,6 +309,7 @@ SMBus block and byte-at-a-time writes, and check that every partial update leave
 
 - Pinouts and board details:
   - [elektricM/amd-bc250-docs](https://github.com/elektricM/amd-bc250-docs)
+    ([TPMS1 pinout](https://elektricm.github.io/amd-bc250-docs/hardware/pinouts/#tpms1-lpc-header))
   - [mothenjoyer69/bc250-documentation](https://github.com/mothenjoyer69/bc250-documentation)
 - The idea, and the confirmation that TPMS1's SMBus drives a 128x64 OLED:
   [NexGen 3D Printing SteamMachine discussion #105](https://github.com/NexGen-3D-Printing/SteamMachine/discussions/105)
