@@ -21,6 +21,7 @@ from bc250_oled.sensors import SAMPLE, Stats  # noqa: E402
 
 SIZES = [(p.driver, p.width, p.height) for p in displays.PRESETS.values()] + [
     ("ssd1306", 96, 16), ("sh1107", 64, 128), ("sh1107", 80, 128), ("ssd1305", 128, 32), ("sh1106", 128, 32)]
+PICTURES = sorted({(w, h) for _, w, h in SIZES} | {(h, w) for _, w, h in SIZES})  # every size, landscape and portrait
 
 
 # --- an SSD1306/SH1106 that keeps its picture memory, fed by a fake smbus2 ----------------------------------------------
@@ -189,7 +190,7 @@ class Fixture(unittest.TestCase):
 
 class Layouts(unittest.TestCase):
     def test_every_size_and_page(self):
-        for (driver, width, height), theme in ((size, theme) for size in SIZES for theme in screens.THEMES):
+        for (width, height), theme in ((size, theme) for size in PICTURES for theme in screens.THEMES):
             for stats in (SAMPLE, Stats()):
                 s = screens.Screens(width, height, list(screens.PAGES), theme=theme)
                 for _ in range(3):
@@ -236,7 +237,7 @@ class Layouts(unittest.TestCase):
         c = screens.content("cpu", Stats(cpu_temp=95, cpu_load=50), 90, "halloween")
         self.assertEqual((c.label, c.right, c.hot), ("🎃 CPU", "BOO!", True))
         self.assertEqual(screens.content("cpu", SAMPLE, 90, "classic").label, "CPU")
-        for driver, width, height in SIZES:
+        for width, height in PICTURES:
             frames = screens.Screens(width, height, theme="halloween").splash_frames()
             self.assertGreater(len(frames), 5)
             self.assertLess(sum(seconds for _, seconds in frames), 4)
@@ -245,6 +246,33 @@ class Layouts(unittest.TestCase):
                 self.assertIsNotNone(picture.getbbox())
         with self.assertRaises(ValueError):
             screens.Screens(128, 64, theme="spooky")
+
+    def test_the_logo_on_every_size(self):
+        for width, height in PICTURES:
+            with self.subTest(size=f"{width}x{height}"):
+                logo = screens.Screens(width, height).splash()
+                if min(width, height) >= 32:
+                    self.assertIsNotNone(logo.getbbox(), "no logo")
+                frames = screens.Screens(width, height, theme="halloween").splash_frames()
+                if height > width >= 24:  # the logo under the pumpkin (16 pixels across: too narrow for "250")
+                    self.assertIsNotNone(frames[-1][0].crop((0, height * 2 // 3, width, height)).getbbox())
+
+    def test_orientation(self):
+        """Landscape by default, portrait on request, whatever the panel's own shape; --rotate turns it further."""
+        for (width, height), orientation, rotate, expected in (
+                ((128, 64), "landscape", 0, 0), ((128, 64), "portrait", 0, 90), ((128, 64), "portrait", 180, 270),
+                ((128, 64), "landscape", 180, 180), ((64, 128), "landscape", 0, 90), ((64, 128), "portrait", 0, 0),
+                ((128, 128), "portrait", 0, 0), ((128, 128), "landscape", 90, 90)):
+            turn = displays.turn(width, height, orientation, rotate)
+            self.assertEqual(turn, expected, f"{width}x{height} {orientation} --rotate {rotate}")
+            w, h = displays.turned(width, height, turn)
+            self.assertTrue(w == h or (w > h) == (orientation == "landscape") or rotate % 180)
+            device = displays.open_device("sh1107" if width != 128 or height != 64 else "ssd1306", width, height,
+                                          None, None, turn)
+            device.persist = True
+            self.assertEqual(device.size, (w, h))
+        with self.assertRaises(ValueError):
+            displays.turn(128, 64, "sideways")
 
     def test_digits_share_one_width(self):
         self.assertEqual(len({screens.text_width(d) for d in "0123456789"}), 1)
@@ -539,12 +567,27 @@ class Run(Fixture):
         # the display is turned off at the end, but its memory still holds the last picture
         self.assertEqual(controller.picture(128, 64, 0).tobytes(), expected.point(lambda v: 255 * (v >= 128)).tobytes())
 
+    def test_run_in_portrait(self):
+        from bc250_oled.__main__ import main
+        controller = self.use_bus("ssd1306", I2cFunc.SMBUS_WRITE_BYTE_DATA)
+        old = sensors.SYS, sensors.PROC
+        sensors.SYS = sensors.PROC = tempfile.mkdtemp()
+        try:
+            self.assertEqual(main(["run", "--bus", "3", "--orientation", "portrait", "--no-splash", "--frames", "1",
+                                   "--interval", "0.05"]), 0)
+        finally:
+            sensors.SYS, sensors.PROC = old
+        picture = screens.Screens(64, 128).render(Stats()).point(lambda v: 255 * (v >= 128))
+        self.assertEqual(controller.picture(128, 64, 0).tobytes(), picture.rotate(-90, expand=True).tobytes(),
+                         "not the portrait screen turned a quarter turn clockwise")
+
     def test_preview_and_displays(self):
         from bc250_oled.__main__ import main
         out = os.path.join(tempfile.mkdtemp(), "p.png")
         for preset in displays.PRESETS:
             self.assertEqual(main(["preview", "--preset", preset, "--out", out, "--zoom", "2"]), 0)
             self.assertTrue(os.path.getsize(out) > 0)
+            self.assertEqual(main(["preview", "--preset", preset, "--orientation", "portrait", "--out", out]), 0)
         self.assertEqual(main(["displays"]), 0)
 
 

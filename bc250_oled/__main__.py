@@ -10,8 +10,8 @@ import threading
 import time
 
 from . import __version__
-from .displays import (ADDRESSES, DEFAULT_PRESET, DRIVERS, GREYSCALE, PRESETS, Link, Panel, buses,
-                       displays_in, find, open_device, probe, remember, remembered, resolve)
+from .displays import (ADDRESSES, DEFAULT_PRESET, DRIVERS, GREYSCALE, ORIENTATIONS, PRESETS, Link, Panel, buses,
+                       displays_in, find, open_device, probe, remember, remembered, resolve, turn, turned)
 from .screens import PAGES, THEMES, Screens
 from .sensors import SAMPLE, Sensors
 
@@ -54,7 +54,11 @@ def display_options(parser):
                        help=f"the module's size (default {DEFAULT_PRESET}); 'displays' lists them")
     group.add_argument("--driver", choices=DRIVERS, help="override the preset's controller chip")
     group.add_argument("--size", metavar="WxH", help="override the preset's size in pixels, e.g. 128x32")
-    group.add_argument("--rotate", type=int, choices=(0, 90, 180, 270), default=0)
+    group.add_argument("--orientation", choices=ORIENTATIONS, default="landscape",
+                       help="landscape (default): wider than tall; portrait: taller than wide, the display turned on "
+                            "its side")
+    group.add_argument("--rotate", type=int, choices=(0, 90, 180, 270), default=0,
+                       help="turns the picture further, for how the display is mounted: 180 for upside down (0)")
     group.add_argument("--pages", help=f"comma-separated, shown in turn: {', '.join(PAGES)} (default: what fits "
                                        "the size)")
     group.add_argument("--alert", type=float, default=90, help="°C at which a temperature shows inverted (90)")
@@ -71,9 +75,16 @@ def link_options(parser):
                        help="how to write to the bus (default: the fastest it supports)")
 
 
-def make_screens(args, driver, width, height):
+def geometry(args):
+    """(driver, width, height, rotate): the panel's controller and own size, and the degrees its picture is turned
+    for the orientation and --rotate asked for."""
+    driver, width, height = resolve(args.preset, args.driver, args.size)
+    return driver, width, height, turn(width, height, args.orientation, args.rotate)
+
+
+def make_screens(args, driver, width, height, rotate=0):
     pages = args.pages.split(",") if args.pages else None
-    return Screens(width, height, pages, args.alert, grey=driver in GREYSCALE, theme=args.theme)
+    return Screens(*turned(width, height, rotate), pages, args.alert, grey=driver in GREYSCALE, theme=args.theme)
 
 
 def locate(args):
@@ -118,8 +129,8 @@ def is_night(night, now):
 # --- commands -----------------------------------------------------------------------------------------------------------
 
 def cmd_run(args):
-    driver, width, height = resolve(args.preset, args.driver, args.size)
-    screens = make_screens(args, driver, width, height)
+    driver, width, height, rotate = geometry(args)
+    screens = make_screens(args, driver, width, height, rotate)
     night = parse_night(args.night)
     sensors = Sensors()
     try:
@@ -136,7 +147,7 @@ def cmd_run(args):
         try:
             if device is None:
                 bus, address = locate(args)
-                device = open_device(driver, width, height, bus, address, args.rotate, args.link)
+                device = open_device(driver, width, height, bus, address, rotate, args.link)
                 device.persist = True  # at exit: just turned off (below), not cleared with a whole frame of writes
                 panel = Panel(device)
                 if args.contrast is not None:
@@ -253,21 +264,21 @@ def find_displays(everywhere=False):
 
 def cmd_test(args):
     """Step by step on the real display, timing each step: for wiring and driver trouble."""
-    driver, width, height = resolve(args.preset, args.driver, args.size)
+    driver, width, height, rotate = geometry(args)
     lock = claim_display()
     try:
-        return test_display(args, driver, width, height)
+        return test_display(args, driver, width, height, rotate)
     finally:
         if lock:
             lock.close()
 
 
-def test_display(args, driver, width, height):
+def test_display(args, driver, width, height, rotate=0):
     from PIL import Image, ImageDraw
     bus, address = locate(args)
     log(f"Display: {driver} {width}x{height}, I2C bus {bus}, address 0x{address:02X}")
     t = time.monotonic()
-    device = open_device(driver, width, height, bus, address, args.rotate, args.link)
+    device = open_device(driver, width, height, bus, address, rotate, args.link)
     device.persist = True
     link = device._serial_interface
     log(f"  set up in {time.monotonic() - t:.2f} s ({link.mode} writes, {sum(map(len, link.setup))} command bytes)")
@@ -276,10 +287,11 @@ def test_display(args, driver, width, height):
     log(f"  status byte: {'yes, a replugged display is noticed with one read' if panel._status_works else 'no, the display is set up again every minute instead'}")
     steps = [("all white", Image.new("L", device.size, 255)), ("frame and cross", Image.new("L", device.size))]
     draw = ImageDraw.Draw(steps[1][1])
-    draw.rectangle((0, 0, width - 1, height - 1), outline=255)
-    draw.line((0, 0, width - 1, height - 1), fill=255)
-    draw.line((0, height - 1, width - 1, 0), fill=255)
-    steps.append(("stats", make_screens(args, driver, width, height).render(SAMPLE)))
+    w, h = device.size  # turned
+    draw.rectangle((0, 0, w - 1, h - 1), outline=255)
+    draw.line((0, 0, w - 1, h - 1), fill=255)
+    draw.line((0, h - 1, w - 1, 0), fill=255)
+    steps.append(("stats", make_screens(args, driver, width, height, rotate).render(SAMPLE)))
     for name, picture in steps:
         t = time.monotonic()
         panel.show(picture, full=True)
@@ -332,9 +344,9 @@ def sheet(pictures, grey=False, tint="white", zoom=4):
 
 def cmd_preview(args):
     """Saves what the display would show, with sample readings (or this machine's, with --live)."""
-    driver, width, height = resolve(args.preset, args.driver, args.size)
-    open_device(driver, width, height, None, None).persist = True  # checks luma knows this driver and size
-    screens = make_screens(args, driver, width, height)
+    driver, width, height, rotate = geometry(args)
+    open_device(driver, width, height, None, None, rotate).persist = True  # checks luma knows this driver and size
+    screens = make_screens(args, driver, width, height, rotate)
     stats = SAMPLE
     if args.live:
         sensors = Sensors()
@@ -343,7 +355,7 @@ def cmd_preview(args):
         stats = sensors.read()
     pictures = sample_pictures(screens, stats, args.splash)
     sheet(pictures, driver in GREYSCALE, args.tint, args.zoom).save(args.out)
-    log(f"{args.out}: {len(pictures)} screen(s), {driver} {width}x{height}")
+    log(f"{args.out}: {len(pictures)} screen(s), {driver} {width}x{height}, {args.orientation}")
     return 0
 
 

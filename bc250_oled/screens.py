@@ -182,7 +182,7 @@ def tile(image, box, c):
             return fit_scale(c.value, w - 2, bottom - top - 5 * bar - (CAP + 2) * sub - 1)
         best = scale(False, False)
         bar = c.bar is not None and scale(True, False) >= min(best, 3)
-        sub = bool(c.sub) and scale(bar, True) >= min(best, 3)
+        sub = bool(c.sub) and text_width(c.sub) <= w - 2 and scale(bar, True) >= min(best, 3)
         size = max(1, scale(bar, sub))
         if bar:
             filled = round(max(0.0, min(1.0, c.bar)) * (w - 2))
@@ -206,6 +206,8 @@ def graph(image, box, label, values, current, grey=False):
     right = _f(current, "{:.0f}%")
     if text_width(label) + text_width(right) + 4 > w - 2:
         label = label.split()[0]
+    if text_width(label) + text_width(right) + 4 > w - 2:  # very narrow: the graph shows the load anyway
+        right = ""
     text(image, x + 1, y + 1, label)
     text(image, x + w - 1, y + 1, right, align="right")
     top, bottom = y + CAP + 3, y + h - 1
@@ -340,6 +342,8 @@ class Screens:
         title = "BC-250"
         scale = fit_scale(title, self.width - 4, self.height - CAP - 4)
         if not scale:
+            if self.height > self.width:  # narrow portrait
+                stacked_title(image, 0, self.height, "OLED")
             return image
         block = CAP * scale + (CAP + 3 if self.height >= CAP * (scale + 1) + 6 else 0)
         y = (self.height - block) // 2
@@ -390,15 +394,43 @@ def pumpkin(image, cx, cy, r, lit=True):
         d.polygon(hole, fill=255 if lit else 0, outline=255)
 
 
+def stacked_title(image, top, bottom, subtitle):
+    """BC-250 centred between rows top and bottom, on two lines (BC, 250) if one is too wide, and `subtitle` under it
+    when there is room: for portrait screens."""
+    width = image.width - 4
+    room = bottom - top
+    for lines in (["BC-250"], ["BC", "250"]):
+        for sub in (subtitle, ""):
+            if sub and text_width(sub) > width:
+                continue
+            extra = CAP + 3 if sub else 0
+            scale = min(fit_scale(line, width, (room - extra - 3 * (len(lines) - 1)) // len(lines)) for line in lines)
+            if scale:
+                y = top + (room - (CAP * scale + 3) * len(lines) + 3 - extra) // 2
+                for line in lines:
+                    text(image, image.width // 2, y, line, scale, align="center")
+                    y += CAP * scale + 3
+                if sub:
+                    text(image, image.width // 2, y, sub, align="center")
+                return
+
+
 def halloween_splash(width, height):
-    """A jack-o'-lantern beside the logo; its candle flickers while a bat flies past, about 2.5 s."""
-    r = max(5, min(height // 2 - 4, width // 7))
-    cx, cy = round(r * 1.2) + 2, height // 2 + max(1, r // 6)
-    x0 = cx + round(r * 1.2) + 4
-    title = "BC-250"
-    room = width - x0 - 2
-    scale = fit_scale(title, room, height - CAP - 4) or fit_scale(title, room, height)
+    """A jack-o'-lantern beside the logo (above it in portrait); its candle flickers while a bat flies past, about
+    2.5 s."""
     base = Image.new("L", (width, height))
+    title = "BC-250"
+    if height > width:
+        r = max(5, min(int((width // 2 - 3) / 1.2), height // 6))
+        cx, cy = width // 2, height // 3 + r // 2
+        stacked_title(base, cy + r + 3, height, "BOO!")
+        scale = 0
+    else:
+        r = max(5, min(height // 2 - 4, width // 7))
+        cx, cy = round(r * 1.2) + 2, height // 2 + max(1, r // 6)
+        x0 = cx + round(r * 1.2) + 4
+        room = width - x0 - 2
+        scale = fit_scale(title, room, height - CAP - 4) or fit_scale(title, room, height)
     if scale:
         block = CAP * scale + (CAP + 3 if height >= CAP * (scale + 1) + 6 else 0)
         y = (height - block) // 2 + (2 if height >= 48 else 0)

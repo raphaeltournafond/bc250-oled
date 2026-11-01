@@ -8,8 +8,8 @@
 #                                                    (a USB adapter...): open every bus to your account (remembered)
 #   bash setup.sh --uninstall                        stop it and remove what setup added
 #
-# Display options: python -m bc250_oled run --help   (e.g. --preset, --size, --driver, --bus, --rotate, --contrast,
-#                                                     --pages, --night 23:00-07:30, --alert 90)
+# Display options: python -m bc250_oled run --help   (e.g. --preset, --size, --driver, --bus, --orientation portrait,
+#                                                     --rotate, --contrast, --pages, --night 23:00-07:30, --alert 90)
 # Other flags: --no-autostart, --reset-options, --help.
 set -euo pipefail
 

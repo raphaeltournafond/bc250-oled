@@ -38,6 +38,7 @@ DEFAULT_PRESET = "0.96"
 DRIVERS = ("ssd1306", "ssd1315", "ssd1309", "ssd1305", "ssd1316", "sh1106", "sh1107", "ch1115", "ssd1327", "ssd1362",
            "ssd1322", "ssd1325")
 GREYSCALE = ("ssd1327", "ssd1362", "ssd1322", "ssd1325")
+ORIENTATIONS = ("landscape", "portrait")
 
 
 def resolve(preset=None, driver=None, size=None):
@@ -47,6 +48,21 @@ def resolve(preset=None, driver=None, size=None):
     if size:
         width, height = (int(v) for v in size.lower().split("x"))
     return driver or base.driver, width, height
+
+
+def turn(width, height, orientation="landscape", rotate=0):
+    """Degrees to turn the picture on a width x height panel: a quarter turn when the panel's own shape isn't the
+    orientation asked for (landscape: wider than tall; portrait: taller than wide; a square one stays as it is),
+    plus `rotate`, for how the display is mounted."""
+    if orientation not in ORIENTATIONS:
+        raise ValueError(f"unknown orientation {orientation}: choose from {', '.join(ORIENTATIONS)}")
+    quarter = width != height and (orientation == "portrait") != (height > width)
+    return (rotate + 90 * quarter) % 360
+
+
+def turned(width, height, rotate):
+    """The picture's (width, height) on a width x height panel turned by `rotate` degrees."""
+    return (height, width) if rotate % 180 else (width, height)
 
 
 # The chipset SMBus is shared with the board's firmware: while the firmware holds it, the kernel refuses a transfer

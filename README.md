@@ -281,7 +281,8 @@ bash setup.sh --preset 1.3 --rotate 180 --night 23:00-07:30
 |---|---|---|
 | `--preset NAME` | 0.96 | the display (table above) |
 | `--driver`, `--size WxH` | | override the preset's controller / size |
-| `--rotate 0/90/180/270` | 0 | for a display mounted upside down or on its side |
+| `--orientation landscape\|portrait` | landscape | portrait: the display stands on its side, taller than wide, with the screens laid out for it (a quarter turn clockwise; add `--rotate 180` for the other way). Square displays look the same either way |
+| `--rotate 0/90/180/270` | 0 | turns the picture further, for a display mounted upside down (180) |
 | `--pages overview,system,graphs` | depends on size | screens shown in turn, `--page-seconds` each (6). 128x64 and 128x128 show only `overview` (it already has everything), so they don't change by default; 0.91" and smaller rotate `overview,system` |
 | `--contrast 0-255` | controller's | lower is dimmer and wears the OLED less |
 | `--night HH:MM-HH:MM` | | display off during these hours |
