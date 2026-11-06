@@ -330,6 +330,11 @@ Everything is read from `/sys` and `/proc`. Nothing needs root, and nothing is w
 
 Missing values show `--`, and the system page only shows the readings this machine has.
 
+**CPU core unlock (8C/16T):** the kernel then misreads the GPU clock, a value between 0 and 100 MHz whatever the real
+clock is. On an unlocked board the display leaves such a value out instead of showing it. To get the real clock, set
+`fix-freq = true` under `[gpu-usage]` in `cyan-skillfish-governor-smu`'s config and restart that service: it replaces
+`freq1_input` with the value read from the SMU, and the display picks it up. Stock boards aren't affected.
+
 ## Development
 
 ```bash

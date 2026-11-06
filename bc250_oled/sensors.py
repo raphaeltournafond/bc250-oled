@@ -47,6 +47,17 @@ def _number(path, divide=1.0):
         return None
 
 
+UNLOCKED_MIN_GPU_MHZ = 200  # the clock never really goes this low; the misread value after a core unlock stays under
+
+
+def core_unlocked():
+    """Whether the board's two extra CPU cores were unlocked (8C/16T instead of 6C/12T). The kernel then misreads the
+    GPU clock (a value between 0 and 100 MHz, whatever the real clock): cyan-skillfish-governor's fix-freq option
+    replaces freq1_input with the real clock, otherwise the display shows none rather than a wrong one."""
+    present = re.fullmatch(r"0-(\d+)", _read(os.path.join(SYS, "devices", "system", "cpu", "present")) or "")
+    return bool(present) and int(present.group(1)) + 1 > 12
+
+
 def hwmon(*names):
     """The first hwmon folder whose driver name is one of `names`."""
     for folder in sorted(glob.glob(os.path.join(SYS, "class", "hwmon", "hwmon*"))):
@@ -92,6 +103,8 @@ class Sensors:
         if amd:
             s.gpu_temp = _number(os.path.join(amd, "temp1_input"), 1000)
             s.gpu_mhz = _number(os.path.join(amd, "freq1_input"), 1e6)
+            if s.gpu_mhz is not None and s.gpu_mhz < UNLOCKED_MIN_GPU_MHZ and core_unlocked():
+                s.gpu_mhz = None
             s.gpu_watts = (_number(os.path.join(amd, "power1_average"), 1e6)
                            or _number(os.path.join(amd, "power1_input"), 1e6))
             busy = _number(os.path.join(amd, "device", "gpu_busy_percent"))

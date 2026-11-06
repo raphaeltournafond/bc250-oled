@@ -322,6 +322,27 @@ class Sensors(unittest.TestCase):
         self.assertAlmostEqual(second.cpu_load, 25.0)
         self.assertEqual(second.gpu_load, 0.0)  # the client's busy time didn't grow
 
+    def test_gpu_clock_on_a_core_unlocked_board(self):
+        """The unlock makes the kernel misread the clock: below any real clock, it shows none. Stock boards unchanged,
+        and an unlocked board with the governor's fix-freq (the real clock in freq1_input) shows it."""
+        root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(root, "class", "hwmon", "hwmon0"))
+        os.makedirs(os.path.join(root, "devices", "system", "cpu"))
+
+        def board(threads, mhz):
+            for path, value in (("class/hwmon/hwmon0/name", "amdgpu"), ("devices/system/cpu/present", f"0-{threads - 1}"),
+                                ("class/hwmon/hwmon0/freq1_input", mhz * 1_000_000)):
+                with open(os.path.join(root, path), "w") as f:
+                    f.write(f"{value}\n")
+        old = sensors.SYS, sensors.PROC
+        sensors.SYS, sensors.PROC = root, root
+        try:
+            for threads, mhz, shown in ((12, 80, 80.0), (12, 1873, 1873.0), (16, 57, None), (16, 1500, 1500.0)):
+                board(threads, mhz)
+                self.assertEqual(sensors.Sensors().read().gpu_mhz, shown, (threads, mhz))
+        finally:
+            sensors.SYS, sensors.PROC = old
+
     def test_nothing_there(self):
         old = sensors.SYS, sensors.PROC
         sensors.SYS = sensors.PROC = tempfile.mkdtemp()
